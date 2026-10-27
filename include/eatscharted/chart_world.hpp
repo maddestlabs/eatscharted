@@ -1,0 +1,172 @@
+#ifndef EATSCHARTED_CHART_WORLD_HPP
+#define EATSCHARTED_CHART_WORLD_HPP
+
+#include "eatscharted/chart_types.hpp"
+#include "eatscharted/voronoi_atlas.hpp"
+#include "eatscharted/ink_canvas.hpp"
+#include "eatsbits/ui/batch_renderer_2d.hpp"
+#include <vector>
+#include <string>
+#include <cstdint>
+
+namespace eatscharted {
+
+struct ChartStats {
+    float atlasGenTimeMs{0.0f};
+    uint32_t mapSurfaceTriangles{0};
+    uint32_t bannerGlyphTriangles{0};
+    uint32_t standeeCount{0};
+    uint32_t telegraphCount{0};
+    uint32_t pointLightCount{0};
+};
+
+struct HeroState {
+    Vec3f pos{-4.0f, 0.5f, -1.5f};
+    Vec2f vel{0.0f, 0.0f};
+    Vec2f facingDir{0.0f, 1.0f};
+    bool facingRight{true};
+    bool isSailing{false};          // Automatically true when sailing on ocean/bay (sdfCoast < -0.35)
+    float dodgeTimer{0.0f};
+    float dodgeCooldown{0.0f};
+    float attackTimer{0.0f};
+    float spellTimer{0.0f};
+    int level{1};
+    int hp{120};
+    int maxHp{120};
+    int mana{60};
+    int maxMana{60};
+    int gold{50};
+    int xp{0};
+    std::string activeRegionName{"PORT PAWVEN"};
+    std::string activeRegionSub{"Royal Cartographer's Harbor"};
+};
+
+struct EnemyAgent {
+    Vec3f pos{0.0f, 0.0f, 0.0f};
+    Vec3f homePos{0.0f, 0.0f, 0.0f};
+    uint16_t standeeLayer{InkLayer::StandeeMonsterSlime};
+    std::string name{"Ink Slime"};
+    float width{2.1f};
+    float height{2.1f};
+    int hp{45};
+    int maxHp{45};
+    float telegraphProgress{0.0f};  // > 0 when charging a ground-projected attack circle/cone
+    float telegraphRadius{3.6f};
+    uint32_t telegraphType{TelegraphType::EnemyCircle};
+    float cooldownTimer{1.5f};
+    float hitFlashTimer{0.0f};
+    bool isBoss{false};
+    bool alive{true};
+};
+
+struct FloatingNumber {
+    Vec3f worldPos{0.0f, 0.0f, 0.0f};
+    std::string text;
+    RGBA8 color{255, 235, 110, 255};
+    float lifetime{0.9f};
+    float age{0.0f};
+};
+
+struct RaycastHit {
+    bool hit{false};
+    float distance{0.0f};
+    Vec3f position{0.0f, 0.0f, 0.0f};
+    BiomeId biome{BiomeId::LushMeadow};
+};
+
+/**
+ * Complete 2.5D Living Cartography World State (Watabou Perilous Shores + Cat Quest).
+ */
+class ChartWorld {
+public:
+    ChartWorld();
+
+    void clear();
+
+    // High-level declarative world builders
+    void buildPerilousPeninsula(uint32_t seed = 1492u);
+    void buildShatteredArchipelago(uint32_t seed = 1715u);
+    void buildHighlandKingdom(uint32_t seed = 1337u);
+    void buildOnePageDungeon(uint32_t seed = 999u);
+    void generateCustomChart(uint32_t seed, AtlasPreset preset);
+
+    // Rebuilds the 3D tabletop parchment mesh, 3D curved calligraphic banners, and static standees
+    ChartStats rebuildWorldGeometry();
+
+    // Updates dynamic standees (hero, companion, ships, enemies, slash arcs), telegraphs, and 2D HUD
+    void updateSimulation(float dt, uint32_t viewportW, uint32_t viewportH);
+
+    // Player actions (Cat Quest tabletop controls)
+    void moveHero(float moveX, float moveZ, bool sprintOrDodge, float dt);
+    void triggerMeleeSlash();
+    void triggerArcaneSpell();
+    bool tryToggleNearbyDungeon();
+
+    [[nodiscard]] RaycastHit raycast(Vec3f origin, Vec3f dir, float maxDist = 250.0f) const noexcept;
+
+    // Accessors
+    [[nodiscard]] const VoronoiAtlas& voronoi() const noexcept { return voronoi_; }
+    [[nodiscard]] const InkAtlasData& inkAtlas() const noexcept { return inkAtlas_; }
+    [[nodiscard]] const std::vector<ChartVertex>& worldVertices() const noexcept { return worldVerts_; }
+    [[nodiscard]] const std::vector<StandeeInstance>& standees() const noexcept { return activeStandees_; }
+    [[nodiscard]] const std::vector<CombatTelegraph>& telegraphs() const noexcept { return activeTelegraphs_; }
+    [[nodiscard]] const std::vector<PointLight>& pointLights() const noexcept { return pointLights_; }
+    [[nodiscard]] const eatsbits::ui::BatchRenderer2D& overlay2D() const noexcept { return overlay2D_; }
+
+    [[nodiscard]] HeroState& hero() noexcept { return hero_; }
+    [[nodiscard]] const HeroState& hero() const noexcept { return hero_; }
+
+    [[nodiscard]] CameraConfig& camera() noexcept { return camera_; }
+    [[nodiscard]] const CameraConfig& camera() const noexcept { return camera_; }
+
+    [[nodiscard]] AtmosphereConfig& atmosphere() noexcept { return atmosphere_; }
+    [[nodiscard]] const AtmosphereConfig& atmosphere() const noexcept { return atmosphere_; }
+
+    void setTimeOfDay(float t) noexcept { atmosphere_.timeOfDay = t; }
+    [[nodiscard]] float timeOfDay() const noexcept { return atmosphere_.timeOfDay; }
+    [[nodiscard]] bool useDayNightCycle() const noexcept { return useDayNightCycle_; }
+    void setUseDayNightCycle(bool enable) noexcept { useDayNightCycle_ = enable; }
+
+    void addCustomStandee(Vec3f pos, float w, float h, uint16_t layer, uint32_t flags = StandeeFlags::PopUpTilt);
+    void addCustomBanner(const std::string& text, Vec2f p0, Vec2f p1, Vec2f p2, float letterSize = 2.2f);
+    void addPointLight(Vec3f pos, float radius, Vec3f color, float intensity);
+
+private:
+    void bakeCurvedMapBannersToMesh();
+    void populateProceduralStandeesAndEnemies();
+    void buildDynamicStandeesAndTelegraphs();
+    void buildHudAndMapOverlay(uint32_t viewportW, uint32_t viewportH);
+
+    VoronoiAtlas voronoi_;
+    InkAtlasData inkAtlas_;
+    bool atlasGenerated_{false};
+    float atlasGenTimeMs_{0.0f};
+
+    std::vector<ChartVertex> worldVerts_;
+    uint32_t mapSurfaceTriCount_{0};
+    uint32_t bannerGlyphTriCount_{0};
+
+    std::vector<StandeeInstance> staticStandees_;
+    std::vector<StandeeInstance> activeStandees_;
+    std::vector<CombatTelegraph> activeTelegraphs_;
+    std::vector<PointLight> pointLights_;
+    std::vector<CurvedMapBanner> customBanners_;
+
+    HeroState hero_;
+    std::vector<EnemyAgent> enemies_;
+    std::vector<FloatingNumber> floatingNumbers_;
+
+    CameraConfig camera_;
+    AtmosphereConfig atmosphere_;
+    bool useDayNightCycle_{false};
+    float simTimeSec_{0.0f};
+    uint32_t overworldReturnSeed_{1492u};
+    AtlasPreset overworldReturnPreset_{AtlasPreset::PerilousPeninsula};
+    Vec3f overworldReturnPos_{-4.0f, 0.5f, -1.5f};
+
+    eatsbits::ui::BatchRenderer2D overlay2D_;
+};
+
+} // namespace eatscharted
+
+#endif // EATSCHARTED_CHART_WORLD_HPP

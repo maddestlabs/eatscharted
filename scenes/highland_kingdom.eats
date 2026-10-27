@@ -1,0 +1,5 @@
+# Eatscharted Scene Recipe: Silvervale Highland Kingdom
+
+chart.clear()
+chart.build_highland_kingdom(seed=1337)
+chart.set_hero_pos(x=0.0, z=4.0)

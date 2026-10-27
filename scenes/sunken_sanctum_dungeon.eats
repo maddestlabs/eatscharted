@@ -1,0 +1,6 @@
+# Eatscharted Scene Recipe: The Sunken Sanctum (Watabou One-Page Dungeon Mode)
+# Cross-hatched subterranean stone perimeter, 2m flagstone grid, flooded crypt moat, and Wyvern Boss.
+
+chart.clear()
+chart.build_one_page_dungeon(seed=999)
+chart.set_hero_pos(x=0.0, z=-22.0)

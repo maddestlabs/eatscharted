@@ -1,0 +1,7 @@
+# Eatscharted Scene Recipe: The Perilous Shores (Watabou x Cat Quest Flagship)
+# Generates a fractal peninsula with concentric ink water-lining, hachured ridges,
+# clumped ink-wash forests, cased royal roads, curved map banners, and 2.5D standees.
+
+chart.clear()
+chart.build_perilous_peninsula(seed=1492)
+chart.set_hero_pos(x=-4.0, z=-2.0)

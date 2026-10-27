@@ -1,0 +1,5 @@
+# Eatscharted Scene Recipe: The Shattered Isles (Naval Archipelago & Caravel Sailing)
+
+chart.clear()
+chart.build_shattered_archipelago(seed=1715)
+chart.set_hero_pos(x=0.0, z=-4.0)
