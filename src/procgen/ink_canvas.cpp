@@ -2,6 +2,8 @@
 #include <cmath>
 #include <algorithm>
 #include <cstring>
+#include <memory>
+#include <vector>
 
 namespace eatscharted {
 
@@ -110,8 +112,7 @@ struct LayerSlice {
 
     // Adds a crisp hand-inked outline + subtle warm paper standee rim around opaque pixels
     void applyInkOutlineAndPaperCutout() noexcept {
-        RGBA8 copy[kS * kS];
-        std::memcpy(copy, albedo, sizeof(copy));
+        std::vector<RGBA8> copy(albedo, albedo + (kS * kS));
 
         // Pass 1: 1px dark India-ink outline around any opaque shape
         for (int y = 1; y < kS - 1; ++y) {
@@ -684,8 +685,11 @@ InkAtlasData InkCanvas::generateFullAtlas(uint32_t seed) {
     atlas.albedoBytes.resize(totalBytes, 0);
     atlas.normalBytes.resize(totalBytes, 0);
 
+    auto slicePtr = std::make_unique<LayerSlice>();
+    LayerSlice& slice = *slicePtr;
+
     for (uint32_t layer = 0; layer < InkLayer::kCount; ++layer) {
-        LayerSlice slice{};
+        slice.clear();
         switch (layer) {
             case InkLayer::ParchmentGrain:
             case InkLayer::CobblePlaza:
