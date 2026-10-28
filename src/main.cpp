@@ -25,8 +25,13 @@ int main(int argc, char** argv) {
         }
     }
 
+#if defined(__EMSCRIPTEN__)
+    static eatscharted::ChartWorld world;
+    static eatscharted::ChartScriptEngine scriptEngine(world);
+#else
     eatscharted::ChartWorld world;
     eatscharted::ChartScriptEngine scriptEngine(world);
+#endif
 
     if (std::filesystem::exists(scriptPath)) {
         std::cout << "[Eatscharted] Executing Eatscript cartography recipe: " << scriptPath << "\n";
@@ -60,7 +65,11 @@ int main(int argc, char** argv) {
         }
     }
 
+#if defined(__EMSCRIPTEN__)
+    static eatscharted::AudioFoleyEngine foley;
+#else
     eatscharted::AudioFoleyEngine foley;
+#endif
     foley.init(true);
     return eatscharted::ChartRenderer::runInteractiveWindow(world, scriptEngine, scriptPath, foley, width, height);
 }

@@ -4,4 +4,4 @@
 
 chart.clear()
 chart.build_perilous_peninsula(seed=1492)
-chart.set_hero_pos(x=-4.0, z=-2.0)
+chart.set_hero_pos(x=6.0, z=-30.0)

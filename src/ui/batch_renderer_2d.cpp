@@ -2195,6 +2195,29 @@ void BatchRenderer2D::drawTriangle(float x0, float y0, float x1, float y1, float
 }
 
 void BatchRenderer2D::drawRect(float x, float y, float w, float h, float r, float g, float b, float a) {
+    if (w <= 0.0f || h <= 0.0f) return;
+    if (antiAliasingMode_ > 0) {
+        float halfW = w * 0.5f;
+        float halfH = h * 0.5f;
+        uint32_t col = packColor(r, g, b, a);
+        float f = 0.55f;
+        Vertex2D v0{x - f, y - f, 0.0f, 0.0f, col, 2, {-halfW - f, -halfH - f}};
+        Vertex2D v1{x + w + f, y - f, 0.0f, 0.0f, col, 2, {halfW + f, -halfH - f}};
+        Vertex2D v2{x + w + f, y + h + f, 0.0f, 0.0f, col, 2, {halfW + f, halfH + f}};
+        Vertex2D v3{x - f, y + h + f, 0.0f, 0.0f, col, 2, {-halfW - f, halfH + f}};
+        applyTransform(v0.x, v0.y);
+        applyTransform(v1.x, v1.y);
+        applyTransform(v2.x, v2.y);
+        applyTransform(v3.x, v3.y);
+        vertices_.push_back(v0);
+        vertices_.push_back(v1);
+        vertices_.push_back(v2);
+        vertices_.push_back(v0);
+        vertices_.push_back(v2);
+        vertices_.push_back(v3);
+        return;
+    }
+
     uint32_t col = packColor(r, g, b, a);
     Vertex2D v0{x, y, 0.0f, 0.0f, col, 0, {0, 0}};
     Vertex2D v1{x + w, y, 0.0f, 0.0f, col, 0, {0, 0}};
@@ -2843,14 +2866,18 @@ void BatchRenderer2D::drawLine(float x0, float y0, float x1, float y1,
     if (len <= 0.0001f) return;
 
     float halfW = std::max(0.5f, lineWidth * 0.5f);
-    float nx = (-dy / len) * halfW;
-    float ny = (dx / len) * halfW;
+    float feather = (antiAliasingMode_ > 0) ? 0.65f : 0.0f;
+    float totalHalfW = halfW + feather;
+    float nx = (-dy / len) * totalHalfW;
+    float ny = (dx / len) * totalHalfW;
 
     uint32_t col = packColor(r, g, b, a);
-    Vertex2D v0{x0 + nx, y0 + ny, 0.0f, 0.0f, col, 0, {0, 0}};
-    Vertex2D v1{x1 + nx, y1 + ny, 0.0f, 0.0f, col, 0, {0, 0}};
-    Vertex2D v2{x1 - nx, y1 - ny, 0.0f, 0.0f, col, 0, {0, 0}};
-    Vertex2D v3{x0 - nx, y0 - ny, 0.0f, 0.0f, col, 0, {0, 0}};
+    uint32_t mode = (antiAliasingMode_ > 0) ? 6u : 0u;
+
+    Vertex2D v0{x0 + nx, y0 + ny, halfW, 0.0f, col, mode, {totalHalfW, totalHalfW}};
+    Vertex2D v1{x1 + nx, y1 + ny, halfW, 0.0f, col, mode, {totalHalfW, totalHalfW}};
+    Vertex2D v2{x1 - nx, y1 - ny, halfW, 0.0f, col, mode, {-totalHalfW, totalHalfW}};
+    Vertex2D v3{x0 - nx, y0 - ny, halfW, 0.0f, col, mode, {-totalHalfW, totalHalfW}};
     applyTransform(v0.x, v0.y);
     applyTransform(v1.x, v1.y);
     applyTransform(v2.x, v2.y);

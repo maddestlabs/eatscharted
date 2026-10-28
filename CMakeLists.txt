@@ -46,6 +46,8 @@ target_include_directories(eats_script PUBLIC
 add_library(eatscharted_core STATIC
     src/procgen/voronoi_atlas.cpp
     src/procgen/ink_canvas.cpp
+    src/procgen/procedural_names.cpp
+    src/procgen/cartographic_text.cpp
     src/world/chart_world.cpp
     src/world/script_bindings.cpp
     src/audio/audio_foley.cpp
@@ -96,22 +98,39 @@ else()
 endif()
 
 # 5. Main Eatscharted Executable
-add_executable(eatscharted src/main.cpp)
-target_link_libraries(eatscharted PRIVATE eatscharted_render)
-
-if(WIN32 AND NOT EMSCRIPTEN)
+if(EMSCRIPTEN)
+    add_executable(eatscharted src/main.cpp)
+    target_compile_options(eatscharted PRIVATE -O3 -fexceptions)
+    target_compile_definitions(eatscharted PRIVATE NDEBUG)
+    target_link_libraries(eatscharted PRIVATE eatscharted_render)
+    set_target_properties(eatscharted PROPERTIES
+        OUTPUT_NAME "eatscharted"
+        SUFFIX ".html"
+        LINK_FLAGS "-O3 -sNO_EXIT_RUNTIME=1 -fexceptions --use-port=emdawnwebgpu -sUSE_GLFW=3 -sALLOW_MEMORY_GROWTH=1 -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,UTF8ToString -sEXPORTED_FUNCTIONS=_main,_eatscharted_load_scene,_eatscharted_set_time_of_day,_eatscharted_get_time_of_day,_eatscharted_toggle_time_progression,_eatscharted_set_touch_move,_eatscharted_trigger_slash,_eatscharted_trigger_spell,_eatscharted_toggle_dungeon,_eatscharted_toggle_atlas,_eatscharted_add_atlas_zoom,_eatscharted_get_hero_hp,_eatscharted_get_hero_max_hp,_eatscharted_get_hero_level,_eatscharted_get_hero_gold,_eatscharted_get_charted_chunks,_eatscharted_is_sailing,_eatscharted_is_dungeon_mode,_eatscharted_get_region_name,_eatscharted_get_region_sub --preload-file ${CMAKE_CURRENT_SOURCE_DIR}/scenes@/scenes --shell-file ${CMAKE_CURRENT_SOURCE_DIR}/web/index.html"
+    )
     add_custom_command(TARGET eatscharted POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${CMAKE_CURRENT_SOURCE_DIR}/third_party/wgpu/lib/wgpu_native.dll"
-            "$<TARGET_FILE_DIR:eatscharted>/wgpu_native.dll"
+            "${CMAKE_BINARY_DIR}/eatscharted.html"
+            "${CMAKE_BINARY_DIR}/index.html"
     )
-endif()
+else()
+    add_executable(eatscharted src/main.cpp)
+    target_link_libraries(eatscharted PRIVATE eatscharted_render)
 
-# 6. Automated Unit Test Suite (Disabled by default per AGENTS.md)
-option(BUILD_TESTING "Build automated unit test suite" OFF)
-if(BUILD_TESTING AND NOT EMSCRIPTEN)
-    enable_testing()
-    add_executable(eatscharted_tests tests/chart_core_tests.cpp)
-    target_link_libraries(eatscharted_tests PRIVATE eatscharted_core)
-    add_test(NAME eatscharted_tests COMMAND eatscharted_tests)
+    if(WIN32)
+        add_custom_command(TARGET eatscharted POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CMAKE_CURRENT_SOURCE_DIR}/third_party/wgpu/lib/wgpu_native.dll"
+                "$<TARGET_FILE_DIR:eatscharted>/wgpu_native.dll"
+        )
+    endif()
+
+    # 6. Automated Unit Test Suite (Disabled by default per AGENTS.md)
+    option(BUILD_TESTING "Build automated unit test suite" OFF)
+    if(BUILD_TESTING)
+        enable_testing()
+        add_executable(eatscharted_tests tests/chart_core_tests.cpp)
+        target_link_libraries(eatscharted_tests PRIVATE eatscharted_core)
+        add_test(NAME eatscharted_tests COMMAND eatscharted_tests)
+    endif()
 endif()

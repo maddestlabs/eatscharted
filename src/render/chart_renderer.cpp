@@ -134,6 +134,8 @@ struct alignas(16) SceneUniforms {
     float camBasisY[4];  // xyz = camera up, w = pointLightCount
     float camBasisZ[4];  // xyz = camera forward, w = inkDensity
     float heroPos[4];    // xyz = hero world position, w = atlasZoom
+    float gridOrigin[4]; // xy = activeChunkX, activeChunkZ, z = kChunkSize, w = kChunkRadius
+    float discoveryGrid[16][4]; // 7x7 discovery grid packed in 16 vec4s
 };
 
 // ============================================================================
@@ -153,6 +155,8 @@ struct SceneUniforms {
     camBasisY     : vec4<f32>,
     camBasisZ     : vec4<f32>,
     heroPos       : vec4<f32>,
+    gridOrigin    : vec4<f32>,
+    discoveryGrid : array<vec4<f32>, 16>,
 };
 
 struct ChartVertex {
@@ -205,7 +209,7 @@ fn vs_shadow_sprite(@builtin(vertex_index) vertexIndex : u32) -> StandeeShadowOu
     let flags   = bitcast<u32>(sp.sizeAndMeta.z);
     let phase   = sp.sizeAndMeta.w;
 
-    var corners = array<vec2<f32>, 6>(
+    let corners = array<vec2<f32>, 6>(
         vec2<f32>(-0.5, 0.0),
         vec2<f32>( 0.5, 0.0),
         vec2<f32>( 0.5, 1.0),
@@ -214,6 +218,15 @@ fn vs_shadow_sprite(@builtin(vertex_index) vertexIndex : u32) -> StandeeShadowOu
         vec2<f32>(-0.5, 1.0)
     );
     let c = corners[cornerIdx];
+
+    // Skip shadow casting for lightweight ground foliage (e.g. StandeeFlags::NoShadow = 128u)
+    if ((flags & 128u) != 0u) {
+        var skipOut : StandeeShadowOut;
+        skipOut.clipPos  = vec4<f32>(0.0, 0.0, -2.0, 1.0);
+        skipOut.uv       = vec2<f32>(0.0, 0.0);
+        skipOut.texLayer = 0u;
+        return skipOut;
+    }
 
     var uCoord = c.x + 0.5;
     if ((flags & 1u) != 0u) {
@@ -268,6 +281,8 @@ struct SceneUniforms {
     camBasisY     : vec4<f32>,
     camBasisZ     : vec4<f32>,
     heroPos       : vec4<f32>,
+    gridOrigin    : vec4<f32>,
+    discoveryGrid : array<vec4<f32>, 16>,
 };
 
 struct ChartVertex {
@@ -366,6 +381,41 @@ fn sampleShadowPCF(worldPos : vec3<f32>) -> f32 {
     return sum / 9.0;
 }
 
+fn getChartDiscovery(mapXZ : vec2<f32>) -> f32 {
+    let chunkSize = u.gridOrigin.z;
+    let radius = u.gridOrigin.w;
+    let dim = radius * 2.0 + 1.0;
+    let minCorner = vec2<f32>(u.gridOrigin.x - radius, u.gridOrigin.y - radius) * chunkSize;
+    let relPos = (mapXZ - minCorner) / chunkSize;
+
+    var gridD = 0.0;
+    if (relPos.x >= 0.0 && relPos.x <= (dim - 1.0) && relPos.y >= 0.0 && relPos.y <= (dim - 1.0)) {
+        let ix = clamp(floor(relPos.x), 0.0, dim - 2.0);
+        let iz = clamp(floor(relPos.y), 0.0, dim - 2.0);
+        let fx = relPos.x - ix;
+        let fz = relPos.y - iz;
+        let stride = i32(dim);
+
+        let idx00 = i32(iz) * stride + i32(ix);
+        let idx10 = i32(iz) * stride + i32(ix + 1.0);
+        let idx01 = i32(iz + 1.0) * stride + i32(ix);
+        let idx11 = i32(iz + 1.0) * stride + i32(ix + 1.0);
+
+        let d00 = u.discoveryGrid[idx00 / 4][idx00 % 4];
+        let d10 = u.discoveryGrid[idx10 / 4][idx10 % 4];
+        let d01 = u.discoveryGrid[idx01 / 4][idx01 % 4];
+        let d11 = u.discoveryGrid[idx11 / 4][idx11 % 4];
+
+        gridD = mix(mix(d00, d10, fx), mix(d01, d11, fx), fz);
+    }
+
+    // Direct hero sight radius: 20m full sight, smooth organic fade to 32m
+    let heroDist = length(mapXZ - u.heroPos.xz);
+    let heroSight = 1.0 - smoothstep(20.0, 32.0, heroDist);
+
+    return clamp(max(gridD, heroSight), 0.0, 1.0);
+}
+
 // Sky / Antique Vellum Backdrop Pass
 struct SkyOut {
     @builtin(position) clipPos : vec4<f32>,
@@ -390,27 +440,37 @@ fn vs_sky(@builtin(vertex_index) vertexIndex : u32) -> SkyOut {
 fn fs_sky(in : SkyOut) -> @location(0) vec4<f32> {
     let t = clamp(in.uv.y, 0.0, 1.0);
     let grain = (fbmPaper(in.uv * 48.0) - 0.5) * 0.04;
-    let skyCol = mix(u.skyZenith.rgb, u.skyHorizon.rgb, pow(t, 0.75)) + vec3<f32>(grain);
+    var skyCol = mix(u.skyZenith.rgb, u.skyHorizon.rgb, pow(t, 0.75)) + vec3<f32>(grain);
+
+    // Subtle celestial stars in the nocturnal sky on antique parchment
+    let isNight = smoothstep(0.28, 0.06, dot(u.skyZenith.rgb, vec3<f32>(0.299, 0.587, 0.114)));
+    if (isNight > 0.01) {
+        let starCoord = floor(in.uv * 170.0);
+        let starRnd = hash2D(starCoord);
+        let starTwinkle = sin(u.camPos.w * 2.4 + starRnd * 6.28) * 0.30 + 0.70;
+        let star = step(0.984, starRnd) * starTwinkle * isNight * 0.42;
+        skyCol += vec3<f32>(star * 0.75, star * 0.85, star);
+    }
     return vec4<f32>(skyCol, 240.0);
 }
 
-// Watabou Perilous Shores + Cat Quest Biome Watercolor Palette
+// Watabou Perilous Shores + Cat Quest Biome Watercolor Palette (Lush & Saturated)
 fn biomePaperTint(biomeId : u32) -> vec3<f32> {
     switch (biomeId) {
-        case 0u: { return vec3<f32>(0.68, 0.76, 0.74); } // OceanDeep (parchment-tinted nautical chart sea)
-        case 1u: { return vec3<f32>(0.76, 0.82, 0.76); } // CoastalShoals (pale turquoise-vellum)
-        case 2u: { return vec3<f32>(0.90, 0.83, 0.67); } // SandyBeach (warm stippled sand)
-        case 3u: { return vec3<f32>(0.66, 0.72, 0.56); } // SaltMarsh (reed olive wash)
-        case 4u: { return vec3<f32>(0.77, 0.80, 0.62); } // LushMeadow (sage-vellum meadow)
-        case 5u: { return vec3<f32>(0.67, 0.74, 0.54); } // DeciduousWoodland (moss wash)
-        case 6u: { return vec3<f32>(0.64, 0.71, 0.63); } // TaigaPines (cool highland slate-sage)
-        case 7u: { return vec3<f32>(0.86, 0.77, 0.58); } // AridSteppe (ochre savanna)
-        case 8u: { return vec3<f32>(0.82, 0.68, 0.54); } // BadlandsCanyon (terracotta sienna)
-        case 9u: { return vec3<f32>(0.85, 0.81, 0.73); } // AlpinePeak (sunlit stone parchment)
-        case 10u:{ return vec3<f32>(0.58, 0.52, 0.60); } // CalamityBlight (ashen violet)
-        case 11u:{ return vec3<f32>(0.84, 0.79, 0.69); } // DungeonFlagstone (carved parchment floor)
-        case 12u:{ return vec3<f32>(0.72, 0.66, 0.56); } // DungeonHatchedWall (cross-hatched rock canvas)
-        default: { return vec3<f32>(0.84, 0.78, 0.66); }
+        case 0u: { return vec3<f32>(0.055, 0.380, 0.460); } // OceanDeep (Rich Nautical Teal Navy)
+        case 1u: { return vec3<f32>(0.220, 0.760, 0.710); } // CoastalShoals (Bright Tropical Turquoise)
+        case 2u: { return vec3<f32>(0.965, 0.895, 0.585); } // SandyBeach (Warm Sunlit Golden Sand)
+        case 3u: { return vec3<f32>(0.340, 0.620, 0.380); } // SaltMarsh (Lush Wetland Olive-Emerald)
+        case 4u: { return vec3<f32>(0.440, 0.745, 0.220); } // LushMeadow (Vibrant Cat Quest Grassy Meadow #70be38)
+        case 5u: { return vec3<f32>(0.220, 0.460, 0.170); } // DeciduousWoodland (Deep Emerald Forest Floor)
+        case 6u: { return vec3<f32>(0.180, 0.380, 0.240); } // TaigaPines (Cool Boreal Pine Green)
+        case 7u: { return vec3<f32>(0.920, 0.780, 0.340); } // AridSteppe (Warm Golden Savanna)
+        case 8u: { return vec3<f32>(0.840, 0.480, 0.240); } // BadlandsCanyon (Vibrant Terracotta Canyon)
+        case 9u: { return vec3<f32>(0.955, 0.975, 0.990); } // AlpinePeak (Crisp Snow Summit White)
+        case 10u:{ return vec3<f32>(0.480, 0.280, 0.520); } // CalamityBlight (Deep Arcane Violet)
+        case 11u:{ return vec3<f32>(0.84, 0.79, 0.69); }    // DungeonFlagstone
+        case 12u:{ return vec3<f32>(0.72, 0.66, 0.56); }    // DungeonHatchedWall
+        default: { return vec3<f32>(0.440, 0.745, 0.220); }
     }
 }
 
@@ -423,6 +483,7 @@ struct WorldVSOut {
     @location(4) gradAndUV     : vec4<f32>, // xy = gradXZ, z = roadArc, w = riverWidth
     @location(5) @interpolate(flat) packedBiomes : u32,
     @location(6) @interpolate(flat) flags        : u32,
+    @location(7) discovery     : vec2<f32>, // x = rawDisc, y = charted
 };
 
 @vertex
@@ -440,15 +501,25 @@ fn vs_world(@builtin(vertex_index) vertexIndex : u32) -> WorldVSOut {
     out.gradAndUV    = vec4<f32>(v.gradRiverBlend.xy, v.uvBiomesFlags.xy);
     out.packedBiomes = bitcast<u32>(v.uvBiomesFlags.z);
     out.flags        = bitcast<u32>(v.uvBiomesFlags.w);
+
+    // Apply hardware depth bias to ground-inscribed map banners & path text so they NEVER z-fight or clip into terrain
+    if ((out.flags & 8u) != 0u) {
+        out.clipPos.z -= 0.0015 * out.clipPos.w;
+    }
+
+    let rawDisc = getChartDiscovery(rawPos.xz);
+    let charted = smoothstep(0.35, 0.65, rawDisc);
+    out.discovery = vec2<f32>(rawDisc, charted);
     return out;
 }
 )";
 
-static const char* kSceneWgslPart2 = R"(
+static const char* kSceneWgslPart2a = R"(
 @fragment
 fn fs_world(in : WorldVSOut) -> @location(0) vec4<f32> {
-    let inkColor    = vec3<f32>(0.13, 0.09, 0.07);
-    let inkSoft     = vec3<f32>(0.28, 0.21, 0.16);
+    let inkColor    = vec3<f32>(0.12, 0.09, 0.07);
+    let inkSoft     = vec3<f32>(0.26, 0.20, 0.16);
+    let inkDark     = vec3<f32>(0.09, 0.07, 0.05);
     let mapXZ       = in.rawMapPos.xz;
     let time        = u.camPos.w;
     let sdfCoast    = in.sdfs.x;
@@ -461,35 +532,51 @@ fn fs_world(in : WorldVSOut) -> @location(0) vec4<f32> {
     let biome0 = in.packedBiomes & 255u;
     let biome1 = (in.packedBiomes >> 8u) & 255u;
 
+    var waveFoam = 0.0;
+    var isWater  = 0.0;
+    var surfNormal = normalize(in.normal);
+
     // 0. Check if this vertex belongs to a 3D Curved Calligraphic Map Banner!
     if ((in.flags & 8u) != 0u) {
-        let bannerInk = select(vec3<f32>(0.14, 0.09, 0.06), vec3<f32>(0.20, 0.28, 0.36), biome0 == 0u);
+        let bDisc = in.discovery.x;
+        let bCharted = smoothstep(0.25, 0.55, bDisc);
+
+        var bannerInk = vec3<f32>(0.10, 0.07, 0.05); // Crisp India ink lettering
+        if (biome0 == 0u && biome1 == 0u) {
+            bannerInk = vec3<f32>(0.22, 0.16, 0.12) * 0.40; // Soft ink drop shadow on parchment
+        } else if (biome0 == 0u) {
+            bannerInk = vec3<f32>(0.14, 0.22, 0.32); // Nautical blue ink
+        }
+        let pencilDraft = vec3<f32>(0.65, 0.60, 0.54) * 0.45;
+        bannerInk = mix(pencilDraft, bannerInk, bCharted);
+
         let camDist = length(in.worldPos - u.camPos.xyz);
         return vec4<f32>(bannerInk, camDist);
     }
 
-    // 1. Base Fibrous Parchment Grain & Biome Watercolor Wash
-    let paperFiber = fbmPaper(mapXZ * 1.45);
-    let fineGrain  = valueNoise2D(mapXZ * 8.5);
+    // 1. Multi-Scale Organic Procgen Noise & Micro-Surface Perturbation (No Synthetic Vector Grid)
+    let macroNoise  = fbmPaper(mapXZ * 0.42);
+    let mediumNoise = fbmPaper(mapXZ * 1.85 + vec2<f32>(macroNoise * 1.4, -macroNoise * 1.1));
+    let fineGrain   = valueNoise2D(mapXZ * 9.5);
+    let microGrain  = valueNoise2D(mapXZ * 24.0);
     var col = biomePaperTint(biome0);
 
-    // Watercolor pigment pooling at biome edges
-    if (biome0 != biome1 && biomeBlend > 0.2) {
-        let edgePool = smoothstep(0.2, 0.9, biomeBlend) * 0.11;
-        col -= vec3<f32>(edgePool, edgePool * 1.05, edgePool * 1.15);
+    // Smooth organic biome blending & soil/moss mottling
+    if (biome0 != biome1 && biomeBlend > 0.1) {
+        let bCol1 = biomePaperTint(biome1);
+        let organicMix = clamp(biomeBlend + (mediumNoise - 0.5) * 0.35, 0.0, 1.0);
+        col = mix(col, bCol1, organicMix * 0.55);
     }
-    col *= (0.93 + 0.12 * paperFiber + 0.04 * (fineGrain - 0.5));
+    col *= (0.86 + 0.18 * mediumNoise + 0.08 * (fineGrain - 0.5) + 0.04 * (microGrain - 0.5));
 
-    // Subtle cartographic lat/long & compass rhumb grid across the map
-    let gridX = abs(fract(mapXZ.x / 16.0 + 0.5) - 0.5) * 16.0;
-    let gridZ = abs(fract(mapXZ.y / 16.0 + 0.5) - 0.5) * 16.0;
-    let gridLine = 1.0 - smoothstep(0.0, 0.08, min(gridX, gridZ));
-    col = mix(col, inkSoft, gridLine * 0.14);
+    // Perturb terrain surface normal with organic micro-relief so sunlight catches turf & soil grain
+    let microNx = (fineGrain - 0.5) * 0.16 + (microGrain - 0.5) * 0.08;
+    let microNz = (mediumNoise - 0.5) * 0.16 - (fineGrain - 0.5) * 0.08;
+    surfNormal = normalize(surfNormal + vec3<f32>(microNx, 0.0, microNz));
 
     // 2. Watabou One-Page Dungeon Mode (Cross-Hatched Walls & Gridded Flagstones)
     if ((in.flags & 16u) != 0u) {
         if (biome0 == 12u) {
-            // Watabou signature dense diagonal cross-hatching on solid dungeon rock perimeter
             let h1 = abs(fract((mapXZ.x + mapXZ.y) * 1.85) - 0.5);
             let h2 = abs(fract((mapXZ.x - mapXZ.y) * 1.85) - 0.5);
             let hatch1 = 1.0 - smoothstep(0.08, 0.18, h1);
@@ -500,7 +587,6 @@ fn fs_world(in : WorldVSOut) -> @location(0) vec4<f32> {
             let inkW = clamp(hatch1 * 0.65 + hatch2 * 0.55 + wallStroke, 0.0, 1.0);
             col = mix(col, inkColor, inkW);
         } else if (biome0 == 11u) {
-            // 2.0m Dungeon Flagstone Grid with double-inked mortar seams & corner bevel ticks
             let tileX = abs(fract(mapXZ.x * 0.5 + 0.5) - 0.5) * 2.0;
             let tileZ = abs(fract(mapXZ.y * 0.5 + 0.5) - 0.5) * 2.0;
             let seam = 1.0 - smoothstep(0.0, 0.06, min(tileX, tileZ));
@@ -508,102 +594,186 @@ fn fs_world(in : WorldVSOut) -> @location(0) vec4<f32> {
             col = mix(col * (1.0 - wallShadow), inkSoft, seam * 0.45);
         }
     } else {
-        // 3. Overworld Cartography: Ocean Concentric Shoreline Water-Lining vs. Land Hachures
-        let jitter = (paperFiber - 0.5) * 0.35;
+        // 3. Overworld: Animated Wave Water + Vector Shoreline Rings vs. Realistic Noise-Textured Land
+        let jitter = (mediumNoise - 0.5) * 0.35;
         let coastD = sdfCoast + jitter;
 
         if (coastD < 0.0) {
-            // OCEAN / BAY: Watabou's signature Concentric Shoreline Water-Lining Rings!
+            // OCEAN / BAY: Animated Dual-Octave Swell Waves + Vector Shoreline Rings!
             let shoreDist = -coastD;
-            let waveAnim  = sin(time * 1.35 + mapXZ.x * 0.25 + mapXZ.y * 0.20) * 0.12;
+
+            // Subtle 3D Gerstner/Dual-Sine Wave Normal & Swell Animation
+            let wPhase1 = mapXZ.x * 0.52 + mapXZ.y * 0.38 + time * 1.45;
+            let wPhase2 = mapXZ.x * 0.31 - mapXZ.y * 0.64 - time * 1.15;
+            let wPhase3 = (mapXZ.x - mapXZ.y) * 1.15 + time * 2.10;
+
+            let waveH = sin(wPhase1) * 0.50 + sin(wPhase2) * 0.35 + cos(wPhase3) * 0.15;
+            let dWdX  = cos(wPhase1) * 0.52 * 0.50 + cos(wPhase2) * 0.31 * 0.35 - sin(wPhase3) * 1.15 * 0.15;
+            let dWdZ  = cos(wPhase1) * 0.38 * 0.50 - cos(wPhase2) * 0.64 * 0.35 + sin(wPhase3) * 1.15 * 0.15;
+
+            // Smoothly damp wave normal right at the shoreline edge, fuller swell offshore
+            let swellStrength = smoothstep(0.0, 3.5, shoreDist) * 0.22;
+            surfNormal = normalize(vec3<f32>(-dWdX * swellStrength, 1.0, -dWdZ * swellStrength));
+
+            // Stepped multi-band water shelf colors modulated by subtle animated wave troughs/crests
+            let seaDeep    = vec3<f32>(0.050, 0.360, 0.450); // Deep Nautical Teal Navy
+            let shelfOuter = vec3<f32>(0.085, 0.510, 0.555); // Outer Shelf Tropical Teal
+            let shelfMid   = vec3<f32>(0.135, 0.655, 0.635); // Mid Shelf Ocean Turquoise
+            let shelfShoal = vec3<f32>(0.220, 0.780, 0.720); // Shallow Coastal Lagoon Turquoise
+
+            let waveShift = waveH * 0.18;
+            var waterBase = seaDeep;
+            if (shoreDist + waveShift <= 2.2) {
+                waterBase = shelfShoal;
+            } else if (shoreDist + waveShift <= 5.2) {
+                waterBase = shelfMid;
+            } else if (shoreDist + waveShift <= 9.5) {
+                waterBase = shelfOuter;
+            }
+            // Subtle sunlit caustic & swell crest tinting in the water body
+            let caustic = smoothstep(0.25, 0.85, waveH * 0.5 + 0.5) * 0.06;
+            col = waterBase + vec3<f32>(caustic * 0.6, caustic * 0.9, caustic);
+
+            // Crisp vector ink shelf contour boundaries separating each water band
+            let contour0 = 1.0 - smoothstep(0.0, 0.14, abs(shoreDist + waveShift - 2.2));
+            let contour1 = 1.0 - smoothstep(0.0, 0.14, abs(shoreDist + waveShift - 5.2));
+            let contour2 = 1.0 - smoothstep(0.0, 0.14, abs(shoreDist + waveShift - 9.5));
+            let shelfBorders = max(contour0, max(contour1, contour2)) * 0.42;
+
+            // Concentric shoreline ripple rings in clean seafoam aqua
+            let waveAnim  = sin(time * 1.45 + mapXZ.x * 0.28 + mapXZ.y * 0.22) * 0.16 + waveH * 0.06;
             let ringFreq  = 0.82;
             let ringPhase = fract((shoreDist + waveAnim) * ringFreq);
-            let ringLine  = 1.0 - smoothstep(0.0, 0.16, abs(ringPhase - 0.35));
-            let shoreFade = exp(-shoreDist * 0.19) * smoothstep(0.15, 0.55, shoreDist);
+            let ringLine  = 1.0 - smoothstep(0.0, 0.15, abs(ringPhase - 0.35));
+            let shoreFade = exp(-shoreDist * 0.18) * smoothstep(0.15, 0.55, shoreDist);
+            let foamColor = vec3<f32>(0.86, 0.99, 0.97);
+            let openWaveCrest = smoothstep(0.68, 0.95, waveH) * smoothstep(2.0, 8.0, shoreDist) * 0.22;
+            col = mix(col, foamColor, clamp(ringLine * shoreFade * 0.52 + openWaveCrest, 0.0, 1.0));
+            waveFoam = ringLine * shoreFade + openWaveCrest;
+            isWater = 1.0;
 
-            // Shallow coastal stipple dots
-            let stipple = step(0.84, hash2D(floor(mapXZ * 4.5))) * exp(-shoreDist * 0.45);
-
-            // Deep-water horizontal wave-dash clusters
-            let waveRow = abs(fract(mapXZ.y * 0.38) - 0.5);
-            let waveSeg = fract(mapXZ.x * 0.14 + floor(mapXZ.y * 0.38) * 0.37);
-            let deepDash = (1.0 - smoothstep(0.0, 0.06, waveRow)) * step(0.68, waveSeg) * smoothstep(4.0, 10.0, shoreDist);
-
-            // Compass rhumb diagonals in deep ocean
-            let rhumb1 = 1.0 - smoothstep(0.0, 0.05, abs(fract((mapXZ.x + mapXZ.y * 1.732) / 28.0) - 0.5) * 28.0);
-            let rhumb2 = 1.0 - smoothstep(0.0, 0.05, abs(fract((mapXZ.x - mapXZ.y * 1.732) / 28.0) - 0.5) * 28.0);
-            let rhumbMask = max(rhumb1, rhumb2) * smoothstep(5.0, 14.0, shoreDist) * 0.18;
-
-            let waterInk = clamp(ringLine * shoreFade * 0.78 + stipple * 0.45 + deepDash * 0.32 + rhumbMask, 0.0, 1.0);
-            col = mix(col, inkSoft, waterInk);
+            let waterInk = clamp(shelfBorders, 0.0, 1.0);
+            col = mix(col, inkDark, waterInk);
         } else {
-            // LANDMASS:
-            // A) Beach sand stippling near shoreline
-            if (coastD < 2.6) {
-                let sandDots = step(0.80, hash2D(floor(mapXZ * 5.0))) * (1.0 - coastD / 2.6);
-                col = mix(col, inkSoft, sandDots * 0.42);
-            }
-
-            // B) Salt Marsh horizontal grass-tuft ticks
-            if (biome0 == 3u) {
-                let tuftRow = abs(fract(mapXZ.y * 1.2) - 0.5);
-                let tuftSeg = fract(mapXZ.x * 0.65 + floor(mapXZ.y * 1.2) * 0.41);
-                let marshTick = (1.0 - smoothstep(0.0, 0.09, tuftRow)) * step(0.72, tuftSeg);
-                col = mix(col, inkSoft, marshTick * 0.48);
-            }
-
-            // C) Watabou Topographic Slope Hachures aligned with downhill gradient (∇h)!
+            // LANDMASS: Natural Noise-Based Procgen Terrain Materials (No Vector Grid/Hachure Clutter)
             let slopeMag = length(gradXZ);
-            if (slopeMag > 0.16) {
-                let downDir = gradXZ / max(slopeMag, 0.001);
-                let tangDir = vec2<f32>(-downDir.y, downDir.x);
-                let uAlongContour = dot(mapXZ, tangDir);
-                let vDownSlope    = dot(mapXZ, downDir);
 
-                // Tapered hachure pen strokes running parallel to downhill slope
-                let tickSpacing = abs(fract(uAlongContour * 1.65 + valueNoise2D(mapXZ * 0.5) * 0.25) - 0.5);
-                let tickBand    = fract(vDownSlope * 0.55);
-                let taperWidth  = 0.14 * (1.0 - abs(tickBand - 0.5) * 1.6);
-                let hachureLine = 1.0 - smoothstep(max(0.02, taperWidth * 0.5), max(0.06, taperWidth), tickSpacing);
-                let slopeWeight = smoothstep(0.16, 0.55, slopeMag) * 0.68;
-                col = mix(col, inkColor, hachureLine * slopeWeight);
+            // A) Natural Wind-Rippled Coastal Sand Beach & Wet Shoreline Gradient
+            let beachNoise = (mediumNoise - 0.5) * 0.95;
+            let beachSpan  = 3.6 + beachNoise;
+            if (coastD < beachSpan) {
+                let beachFactor = 1.0 - smoothstep(beachSpan * 0.45, beachSpan, coastD);
+                // Wet sand darkening right near the water's edge (coastD < 0.85)
+                let wetSand = 1.0 - smoothstep(0.0, 0.95, coastD);
+                let drySandCol = vec3<f32>(0.94, 0.86, 0.58) * (0.94 + 0.12 * fineGrain);
+                let wetSandCol = vec3<f32>(0.68, 0.60, 0.40) * (0.95 + 0.08 * microGrain);
+                let sandCol = mix(drySandCol, wetSandCol, wetSand * 0.75);
+                col = mix(col, sandCol, beachFactor);
             }
 
-            // D) Winding Rivers with inked banks
-            if (sdfRiver < 0.25) {
-                let riverFill = 1.0 - smoothstep(-0.15, 0.10, sdfRiver);
-                let riverBank = 1.0 - smoothstep(0.0, 0.18, abs(sdfRiver));
-                let riverCol  = vec3<f32>(0.64, 0.75, 0.74);
+            // B) Grass & Woodland Organic Turf Mottling (Clover patches, humus & sunlit blades)
+            if (biome0 == 4u || biome0 == 5u || biome0 == 6u) {
+                let turfPatch = smoothstep(0.35, 0.72, mediumNoise);
+                let lushHighlight = vec3<f32>(0.52, 0.82, 0.24);
+                let deepMoss      = vec3<f32>(0.18, 0.42, 0.16);
+                col = mix(col, lushHighlight, turfPatch * (fineGrain * 0.28));
+                col = mix(col, deepMoss, (1.0 - turfPatch) * (1.0 - fineGrain) * 0.24);
+            } else if (biome0 == 7u || biome0 == 8u) {
+                // C) Arid Steppe & Badlands Wind-Swept Sand/Terracotta Strata
+                let strata = sin(mapXZ.x * 0.45 + mapXZ.y * 0.85 + mediumNoise * 4.5) * 0.5 + 0.5;
+                let warmOchre = vec3<f32>(0.95, 0.74, 0.36);
+                let rustScree = vec3<f32>(0.62, 0.34, 0.18);
+                col = mix(col, warmOchre, strata * 0.25);
+                col = mix(col, rustScree, (1.0 - strata) * microGrain * 0.28);
+            }
+
+            // D) 3D Mountain & Cliff Rock Strata + Alpine Snow Accumulation
+            // Automatically transitions steep 3D slopes & high elevations into craggy stratified stone
+            let rockBlend = clamp(smoothstep(0.22, 0.52, slopeMag) + smoothstep(4.2, 6.8, in.rawMapPos.y) * 0.65, 0.0, 1.0);
+            if (rockBlend > 0.01) {
+                let strataWave = sin(in.rawMapPos.y * 4.2 + mediumNoise * 5.0 + mapXZ.x * 0.35);
+                let crevice = smoothstep(0.65, 0.92, strataWave);
+                let graniteLit  = vec3<f32>(0.58, 0.61, 0.66) * (0.90 + 0.20 * fineGrain);
+                let basaltDark  = vec3<f32>(0.28, 0.31, 0.36);
+                let rockCol     = mix(graniteLit, basaltDark, crevice * 0.65 + (1.0 - microGrain) * 0.25);
+                col = mix(col, rockCol, rockBlend);
+
+                // Perturb rock normal along fracture strata for crisp 3D cliff relief
+                surfNormal = normalize(surfNormal + vec3<f32>(strataWave * 0.18 * rockBlend, -crevice * 0.15 * rockBlend, strataWave * 0.14 * rockBlend));
+
+                // Natural Alpine Snow accumulation on high-altitude upward-facing ledges
+                let snowHeight = smoothstep(5.4, 7.2, in.rawMapPos.y + (mediumNoise - 0.5) * 0.8);
+                let snowFlatness = smoothstep(0.45, 0.78, surfNormal.y);
+                let snowMask = clamp(snowHeight * snowFlatness, 0.0, 1.0);
+                let snowCol = vec3<f32>(0.96, 0.98, 1.0) * (0.95 + 0.06 * fineGrain);
+                col = mix(col, snowCol, snowMask);
+            }
+
+            // E) Winding Rivers with Animated Ripple Normals & Lush Riverbanks
+            if (sdfRiver < 0.35) {
+                let riverFill = 1.0 - smoothstep(-0.15, 0.12, sdfRiver);
+                let riverBank = (1.0 - smoothstep(0.0, 0.28, abs(sdfRiver))) * (1.0 - riverFill);
+                let rWave = sin(mapXZ.x * 1.4 + mapXZ.y * 1.2 - time * 2.4) * 0.08;
+                let riverCol = vec3<f32>(0.18, 0.74, 0.74) + vec3<f32>(rWave * 0.4, rWave * 0.8, rWave);
+                col = mix(col, col * 0.65, riverBank * 0.55); // Wet dark soil along riverbank
                 col = mix(col, riverCol, riverFill);
-                col = mix(col, inkColor, riverBank * 0.82);
+                if (sdfRiver < 0.10) {
+                    isWater = 1.0;
+                    waveFoam = max(waveFoam, 0.25 + rWave * 1.5);
+                    surfNormal = normalize(vec3<f32>(rWave * 1.2, 1.0, -rWave * 1.2));
+                }
             }
 
-            // E) Spline Trade Roads (Royal double-cased highways vs. Dashed wilderness trails)
+            // F) Trade Roads: Cobblestone/Dirt Highways & Worn Overland Footpaths
             if ((in.flags & 2u) != 0u) {
-                // Timber / Stone Bridge crossing river
                 let plank = abs(fract(roadArc * 1.8) - 0.5);
-                let bridgeCol = mix(vec3<f32>(0.76, 0.62, 0.44), inkColor, step(0.42, plank) * 0.45);
+                let bridgeCol = mix(vec3<f32>(0.68, 0.52, 0.36), inkColor, step(0.42, plank) * 0.45);
                 col = mix(col, bridgeCol, 1.0 - smoothstep(0.7, 1.1, sdfRoad));
-            } else if (sdfRoad < 1.05) {
+            } else if (sdfRoad < 1.15) {
+                let roadNoise = (fineGrain - 0.5) * 0.18;
                 if (roadArc >= 0.0) {
-                    // Royal Cased Highway: warm buff ribbon + twin inked casing edges
-                    let roadFill = 1.0 - smoothstep(0.55, 0.85, sdfRoad);
-                    let roadEdge = 1.0 - smoothstep(0.0, 0.16, abs(sdfRoad - 0.68));
-                    col = mix(col, vec3<f32>(0.91, 0.84, 0.68), roadFill * 0.78);
-                    col = mix(col, inkColor, roadEdge * 0.72);
+                    // Cobblestone / packed earth highway
+                    let roadFill = 1.0 - smoothstep(0.50, 0.90, sdfRoad + roadNoise);
+                    let roadBorder = (1.0 - smoothstep(0.0, 0.22, abs(sdfRoad + roadNoise - 0.68)));
+                    let cobbleCol = vec3<f32>(0.78, 0.70, 0.54) * (0.90 + 0.20 * microGrain);
+                    col = mix(col, cobbleCol, roadFill * 0.88);
+                    col = mix(col, col * 0.72, roadBorder * 0.45);
                 } else {
-                    // Dashed Explorer Trail
-                    let dashMask = step(0.42, fract(abs(roadArc) * 0.55));
-                    let trailStroke = (1.0 - smoothstep(0.12, 0.34, sdfRoad)) * dashMask;
-                    col = mix(col, inkColor, trailStroke * 0.76);
+                    // Worn dirt & pebble overland trail
+                    let trailFill = 1.0 - smoothstep(0.18, 0.55, sdfRoad + roadNoise);
+                    let dirtCol = vec3<f32>(0.72, 0.58, 0.40) * (0.90 + 0.20 * fineGrain);
+                    col = mix(col, dirtCol, trailFill * 0.82);
                 }
             }
         }
 
-        // Bold India-ink coastline contour at sdfCoast == 0
-        let coastContour = 1.0 - smoothstep(0.0, 0.24, abs(coastD));
-        col = mix(col, inkColor, coastContour * 0.90);
+        // Subtle shoreline water-edge grounding line at sdfCoast == 0
+        let coastContour = 1.0 - smoothstep(0.0, 0.18, abs(coastD));
+        col = mix(col, inkDark, coastContour * 0.55);
     }
+)";
+
+static const char* kSceneWgslPart2b = R"(
+    // 3.5. Diegetic Fog-of-War & Ink Bloom Discovery Front
+    let rawDisc = in.discovery.x;
+    let paperBleed = (mediumNoise - 0.5) * 0.28;
+    let charted = smoothstep(0.35, 0.65, rawDisc + paperBleed);
+
+    // Uncharted vintage dry vellum base with delicate graphite pencil contour sketches
+    let vellumBase = vec3<f32>(0.915, 0.865, 0.775) * (0.93 + 0.10 * mediumNoise + 0.03 * (fineGrain - 0.5));
+    let pencilCoast = (1.0 - smoothstep(0.0, 0.22, abs(sdfCoast))) * 0.55;
+    let pencilSlope = length(gradXZ) * 0.40;
+    let pencilRoad  = (1.0 - smoothstep(0.0, 0.35, sdfRoad)) * 0.25;
+    let pencilGraphite = vec3<f32>(0.38, 0.34, 0.30);
+    let unchartedCol = mix(vellumBase, pencilGraphite, clamp(pencilCoast + pencilSlope + pencilRoad, 0.0, 1.0));
+
+    // Transition uncharted pencil sketch vellum into rich vibrant world!
+    col = mix(unchartedCol, col, charted);
+
+    // Ink Bloom Capillary Edge: concentrated dark pigment fringe where wet watercolor blooms into dry paper!
+    let inkBloomEdge = (1.0 - smoothstep(0.0, 0.15, abs(charted - 0.5))) * smoothstep(0.05, 0.95, rawDisc);
+    let bloomPigment = vec3<f32>(0.16, 0.12, 0.08);
+    col = mix(col, bloomPigment, inkBloomEdge * 0.55);
 
     // 4. Diegetic Map-Surface Combat Telegraphs (Cat Quest AoE Circles, Cones & Arcane Rings!)
     let teleCount = u32(u.camBasisX.w);
@@ -646,14 +816,35 @@ fn fs_world(in : WorldVSOut) -> @location(0) vec4<f32> {
         }
     }
 
-    // 5. Directional Sunlight, Shadow Map & Dynamic Point Lights on the Parchment Relief
-    let N = normalize(in.normal);
+    // 5. Directional Celestial Sunlight / Moonlight & Dynamic Drop Shadows
+    let N = surfNormal;
     let L = normalize(u.sunDir.xyz);
     let ndotl = max(dot(N, L), 0.0);
     let shadow = sampleShadowPCF(in.worldPos);
+    let shadowAmt = clamp(1.0 - shadow, 0.0, 1.0);
 
-    // Warm cartographic paper lighting (high ambient so map ink remains crystal-clear)
-    var lit = col * (vec3<f32>(0.66, 0.63, 0.58) + u.sunColor.rgb * (0.38 * ndotl * shadow));
+    // Hemispherical sky ambient lighting with rich day/night contrast
+    let hemiWeight = clamp(N.y * 0.5 + 0.5, 0.0, 1.0);
+    let skyAmbient = mix(u.skyHorizon.rgb, u.skyZenith.rgb, hemiWeight);
+    let ambientStrength = skyAmbient * 0.36;
+    let directStrength = u.sunColor.rgb * (0.68 * ndotl * shadow);
+    var lit = col * (ambientStrength + directStrength);
+
+    // Dynamic water wave specular & glinting sun/moon highlights (drives Hexagonal Bokeh in Post-Process!)
+    if (isWater > 0.5) {
+        let V = normalize(u.camPos.xyz - in.worldPos);
+        let H = normalize(L + V);
+        let ndoth = max(dot(N, H), 0.0);
+        let waterSpec = pow(ndoth, 42.0) * 1.45;
+        let waveCrest = waveFoam * 0.65;
+        let moonGlint = vec3<f32>(0.36, 0.55, 0.88);
+        let celestialWater = mix(moonGlint * (waterSpec * 1.5 + waveCrest), u.sunColor.rgb * (waterSpec + waveCrest), clamp(u.sunColor.y * 2.0, 0.0, 1.0));
+        lit += celestialWater * (shadow * 0.80 + 0.20);
+    }
+
+    // Soft ambient occlusion in cast drop shadows
+    let shadowOcclude = ambientStrength * 0.30;
+    lit = mix(lit, col * shadowOcclude, shadowAmt * 0.44);
 
     let lightCount = u32(u.camBasisY.w);
     for (var li = 0u; li < lightCount; li = li + 1u) {
@@ -663,7 +854,7 @@ fn fs_world(in : WorldVSOut) -> @location(0) vec4<f32> {
         let r   = pl.posAndRadius.w;
         if (d < r) {
             let atten = pow(1.0 - d / r, 2.0) * pl.colAndInt.w;
-            lit += col * pl.colAndInt.rgb * atten * 0.42;
+            lit += col * pl.colAndInt.rgb * atten * 0.65;
         }
     }
 
@@ -673,8 +864,10 @@ fn fs_world(in : WorldVSOut) -> @location(0) vec4<f32> {
 
     return vec4<f32>(lit, camDist);
 }
+)";
 
-// 2.5D Inked Paper-Cutout Standees Pass
+static const char* kSceneWgslPart3 = R"(
+// 2.5D Volumetric Normal-Mapped Standees Pass (Realms-style 2.5D Trees, Grass, Rocks & Characters)
 struct StandeeVSOut {
     @builtin(position) clipPos : vec4<f32>,
     @location(0) worldPos      : vec3<f32>,
@@ -682,6 +875,7 @@ struct StandeeVSOut {
     @location(2) uv            : vec2<f32>,
     @location(3) @interpolate(flat) texLayer : u32,
     @location(4) @interpolate(flat) flags    : u32,
+    @location(5) charted       : vec2<f32>, // x = sDisc, y = finalCharted
 };
 
 @vertex
@@ -698,7 +892,7 @@ fn vs_sprite(@builtin(vertex_index) vertexIndex : u32) -> StandeeVSOut {
     let flags    = bitcast<u32>(sp.sizeAndMeta.z);
     let phase    = sp.sizeAndMeta.w;
 
-    var corners = array<vec2<f32>, 6>(
+    let corners = array<vec2<f32>, 6>(
         vec2<f32>(-0.5, 0.0),
         vec2<f32>( 0.5, 0.0),
         vec2<f32>( 0.5, 1.0),
@@ -718,13 +912,15 @@ fn vs_sprite(@builtin(vertex_index) vertexIndex : u32) -> StandeeVSOut {
     var swayX = 0.0;
     var bobY  = 0.0;
     if ((flags & 2u) != 0u) {
-        swayX = sin(time * 1.7 + phase) * 0.11 * c.y;
+        // Gentle wind breeze wave across foliage & grass
+        let windWave = sin(time * 1.85 + rawFoot.x * 0.22 + rawFoot.z * 0.18 + phase);
+        swayX = windWave * 0.12 * (c.y * c.y);
     }
     if ((flags & 4u) != 0u) {
         bobY = abs(sin(time * 2.8 + phase)) * 0.08 * c.y;
     }
 
-    // Proximity Canopy Parting: gently lean trees/mountains away when hero walks behind them!
+    // Proximity Canopy Parting: gently lean trees/foliage away when hero walks behind them!
     if ((flags & 16u) != 0u) {
         let toStandee = rawFoot.xz - u.heroPos.xz;
         let distH = length(toStandee);
@@ -746,6 +942,13 @@ fn vs_sprite(@builtin(vertex_index) vertexIndex : u32) -> StandeeVSOut {
     out.uv         = uv;
     out.texLayer   = layer;
     out.flags      = flags;
+
+    let sDisc = getChartDiscovery(rawFoot.xz);
+    var finalCharted = smoothstep(0.35, 0.65, sDisc);
+    if (layer <= 3u) {
+        finalCharted = 1.0;
+    }
+    out.charted = vec2<f32>(sDisc, finalCharted);
     return out;
 }
 
@@ -758,7 +961,7 @@ fn fs_sprite(in : StandeeVSOut) -> @location(0) vec4<f32> {
         discard;
     }
 
-    // Screen-door stipple transparency if hero walks directly behind a tall canopy/mountain standee
+    // Screen-door stipple transparency if hero walks directly behind a tall canopy standee
     if ((in.flags & 16u) != 0u) {
         let distH = length(in.rawFootPos.xz - u.heroPos.xz);
         if (distH < 3.2 && in.rawFootPos.z < u.heroPos.z) {
@@ -772,17 +975,79 @@ fn fs_sprite(in : StandeeVSOut) -> @location(0) vec4<f32> {
     let normSample = textureSampleLevel(normalAtlas, atlasSampler, crispUV, i32(in.texLayer), 0.0);
     let emissive = normSample.a;
 
+    // Reconstruct 3D world-space normal from the 2.5D normal atlas!
+    var localN = normSample.xyz * 2.0 - vec3<f32>(1.0, 1.0, 1.0);
+    if ((in.flags & 1u) != 0u) {
+        localN.x = -localN.x; // Flip horizontal normal when sprite is X-flipped
+    }
+    let rightVec = normalize(vec3<f32>(u.camBasisX.x, 0.0, u.camBasisX.z));
+    let upVec    = vec3<f32>(0.0, 1.0, 0.0);
+    let fwdVec   = normalize(vec3<f32>(-u.camBasisZ.x, 0.25, -u.camBasisZ.z));
+    let N        = normalize(rightVec * localN.x + upVec * localN.y + fwdVec * localN.z);
+    let L        = normalize(u.sunDir.xyz);
+
+    // Half-Lambert wrapped 2.5D diffuse + subsurface foliage translucency for trees & grass
+    let rawNdotL = dot(N, L);
+    let isFoliage = (in.texLayer >= 9u && in.texLayer <= 12u);
+    let wrapDiff = clamp(rawNdotL * 0.62 + 0.38, 0.0, 1.0);
+    let rockDiff = clamp(rawNdotL * 0.78 + 0.22, 0.0, 1.0);
+    let ndotl    = select(rockDiff, wrapDiff, isFoliage);
+
     let shadow = sampleShadowPCF(in.worldPos);
-    var lit = albedo.rgb * (vec3<f32>(0.68, 0.64, 0.58) + u.sunColor.rgb * (0.42 * shadow));
+    let shadowAmt = clamp(1.0 - shadow, 0.0, 1.0);
+
+    // Root/ground contact ambient occlusion + hemispherical sky ambient
+    let groundAO = smoothstep(0.0, 0.22, 1.0 - in.uv.y) * 0.22 + 0.78;
+    let hemiWeight = clamp(N.y * 0.5 + 0.5, 0.0, 1.0);
+    let skyAmbient = mix(u.skyHorizon.rgb, u.skyZenith.rgb, hemiWeight);
+    let ambientStrength = skyAmbient * (0.38 * groundAO);
+    let directStrength  = u.sunColor.rgb * (0.76 * ndotl * shadow);
+
+    // Warm golden-green subsurface scattering / rim glow when foliage is backlit or grazed by sun
+    var subsurface = vec3<f32>(0.0);
+    if (isFoliage) {
+        let rim = pow(clamp(1.0 - localN.z, 0.0, 1.0), 1.6);
+        subsurface = albedo.rgb * u.sunColor.rgb * (rim * 0.32 * shadow);
+    }
+
+    var lit = albedo.rgb * (ambientStrength + directStrength) + subsurface;
+    let shadowOcclude = ambientStrength * 0.32;
+    lit = mix(lit, albedo.rgb * shadowOcclude, shadowAmt * 0.38);
+
+    // Standee 2.5D normal-aware point lighting (torches, streetlamps, campfires illuminating characters, trees & rocks!)
+    let lightCount = u32(u.camBasisY.w);
+    for (var li = 0u; li < lightCount; li = li + 1u) {
+        let pl = pointLights[li];
+        let toL = pl.posAndRadius.xyz - in.worldPos;
+        let d   = length(toL);
+        let r   = pl.posAndRadius.w;
+        if (d < r) {
+            let pDir  = toL / max(d, 0.001);
+            let pDiff = clamp(dot(N, pDir) * 0.5 + 0.5, 0.2, 1.0);
+            let atten = pow(1.0 - d / r, 2.0) * pl.colAndInt.w * pDiff;
+            lit += albedo.rgb * pl.colAndInt.rgb * atten * 0.85;
+        }
+    }
 
     if ((in.flags & 8u) != 0u || emissive > 0.05) {
-        lit = mix(lit, albedo.rgb * 1.45, max(emissive, 0.65));
+        lit = mix(lit, albedo.rgb * 1.55, max(emissive, 0.65));
     }
 
     // Combat Hit Flash (white/gold flash when struck by hero's blade or spell)
     if ((in.flags & 64u) != 0u) {
         lit = mix(lit, vec3<f32>(1.6, 1.4, 1.1), 0.72);
     }
+
+    // Standee Fog-of-War: desaturates to graphite pencil lineart on aged vellum when uncharted!
+    let sDisc = in.charted.x;
+    let finalCharted = in.charted.y;
+
+    let lum = dot(lit, vec3<f32>(0.299, 0.587, 0.114));
+    let pencilStandee = vec3<f32>(lum * 0.82 + 0.14, lum * 0.78 + 0.11, lum * 0.68 + 0.08);
+    lit = mix(pencilStandee, lit, finalCharted);
+
+    let standeeBloom = (1.0 - smoothstep(0.0, 0.16, abs(finalCharted - 0.5))) * smoothstep(0.05, 0.95, sDisc);
+    lit = mix(lit, vec3<f32>(0.15, 0.12, 0.08), standeeBloom * 0.50);
 
     let camDist = length(in.worldPos - u.camPos.xyz);
     let fogFactor = clamp(1.0 - exp(-camDist * u.sunDir.w), 0.0, 0.65);
@@ -793,7 +1058,7 @@ fn fs_sprite(in : StandeeVSOut) -> @location(0) vec4<f32> {
 )";
 
 // ============================================================================
-// WGSL SHADER 2: TABLETOP TILT-SHIFT BOKEH & ANTIQUE VELLUM POST-PROCESS PASS
+// WGSL SHADER 2: REALMS-STYLE HEXAGONAL TILT-SHIFT BOKEH, GOD RAYS & ACES PASS
 // ============================================================================
 static const char* kPostProcessWgslSource = R"(
 struct SceneUniforms {
@@ -809,6 +1074,8 @@ struct SceneUniforms {
     camBasisY     : vec4<f32>,
     camBasisZ     : vec4<f32>,
     heroPos       : vec4<f32>,
+    gridOrigin    : vec4<f32>,
+    discoveryGrid : array<vec4<f32>, 16>,
 };
 
 @group(0) @binding(0) var<uniform> u       : SceneUniforms;
@@ -822,7 +1089,7 @@ struct PostVSOut {
 
 @vertex
 fn vs_post(@builtin(vertex_index) vertexIndex : u32) -> PostVSOut {
-    var pos = array<vec2<f32>, 3>(
+    let pos = array<vec2<f32>, 3>(
         vec2<f32>(-1.0, -1.0),
         vec2<f32>( 3.0, -1.0),
         vec2<f32>(-1.0,  3.0)
@@ -843,6 +1110,15 @@ fn acesFilmic(x : vec3<f32>) -> vec3<f32> {
     return clamp((x * (a * x + b)) / (x * (c * x + d) + e), vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
+// 6-Blade Hexagonal Camera Aperture Radius Factor for a given angle theta
+// Modulates circular samples onto a true regular hexagon (with slight 15-deg camera lens tilt)
+fn hexApertureScale(theta : f32) -> f32 {
+    let bladeAngle = 1.04719755; // pi / 3 (60 degrees per hexagonal facet)
+    let halfBlade  = 0.52359878; // pi / 6 (30 degrees)
+    let localAng   = (theta + 0.261799) - floor((theta + 0.261799) / bladeAngle) * bladeAngle - halfBlade;
+    return 0.8660254 / max(cos(localAng), 0.5);
+}
+
 @fragment
 fn fs_post(in : PostVSOut) -> @location(0) vec4<f32> {
     let centerSample = textureSampleLevel(sceneTex, sceneSampler, in.uv, 0.0);
@@ -850,38 +1126,109 @@ fn fs_post(in : PostVSOut) -> @location(0) vec4<f32> {
 
     let focusDist  = u.skyZenith.w;
     let focusRange = max(u.skyHorizon.w, 1.0);
-    let maxBokeh   = u.params.x;
+    let maxBokeh   = u.params.x * 1.25;
 
-    // Gentle tabletop tilt-shift at the upper horizon and extreme foreground
-    let topTilt = smoothstep(0.24, 0.02, in.uv.y) * 0.55;
-    let depthCoc = clamp((abs(dist - focusDist) - focusRange) / focusRange, 0.0, 1.0);
-    let coc = clamp(max(depthCoc * 0.65, topTilt), 0.0, 1.0) * maxBokeh;
+    // 1. Realms / Octopath HD-2D Miniature Tilt-Shift Hexagonal Bokeh Depth of Field
+    let topTilt    = smoothstep(0.36, 0.01, in.uv.y) * 0.85;
+    let bottomTilt = smoothstep(0.76, 0.99, in.uv.y) * 0.72;
+    let depthCoc   = clamp((abs(dist - focusDist) - focusRange * 0.75) / focusRange, 0.0, 1.0);
+    let coc        = clamp(max(depthCoc * 0.75, max(topTilt, bottomTilt)), 0.0, 1.0) * maxBokeh;
 
     let texelSize = 1.0 / vec2<f32>(max(u.params.y, 1.0), max(u.params.z, 1.0));
     var accum = centerSample.rgb;
     var wSum  = 1.0;
 
-    if (coc > 0.35) {
-        let goldenAngle = 2.39996323;
-        for (var i = 1; i <= 16; i = i + 1) {
-            let r = sqrt(f32(i) / 16.0) * coc;
-            let theta = f32(i) * goldenAngle;
-            let offset = vec2<f32>(cos(theta), sin(theta)) * r * texelSize;
+    // 24-Tap 6-Blade Hexagonal Aperture Bokeh Filter with Catadioptric Rim & HDR Specular Boost
+    if (coc > 0.30) {
+        // Ring 1 (6 inner hexagonal vertices) + Ring 2 (12 mid hexagonal facets) + Ring 3 (6 outer hex corners)
+        for (var i = 1; i <= 24; i = i + 1) {
+            let fi = f32(i);
+            // Quantize angles & radii onto 6-blade hexagonal rings so bright highlights form crisp hexagons!
+            var ringR = 0.45;
+            var theta = fi * 1.04719755; // 60 deg steps
+            if (i > 6 && i <= 18) {
+                ringR = 0.78;
+                theta = f32(i - 6) * 0.52359878; // 30 deg steps along hex edges
+            } else if (i > 18) {
+                ringR = 1.0;
+                theta = f32(i - 18) * 1.04719755; // 60 deg outer hex vertices
+            }
+            let hexR = ringR * hexApertureScale(theta) * coc;
+            let offset = vec2<f32>(cos(theta), sin(theta)) * hexR * texelSize;
             let tap = textureSampleLevel(sceneTex, sceneSampler, clamp(in.uv + offset, vec2<f32>(0.001), vec2<f32>(0.999)), 0.0);
-            accum += tap.rgb;
-            wSum  += 1.0;
+            let tapLum = dot(tap.rgb, vec3<f32>(0.299, 0.587, 0.114));
+            // Emphasize outer hexagonal aperture rim + bright water/torch/sun glints to create Realms hex bokeh
+            let rimWeight = 0.85 + 0.35 * ringR;
+            let highlightBoost = 1.0 + pow(clamp(tapLum - 0.68, 0.0, 3.0), 1.6) * 2.4 * ringR;
+            let w = rimWeight * highlightBoost;
+            accum += tap.rgb * w;
+            wSum  += w;
         }
     }
 
-    var hdr = (accum / wSum) * u.sunColor.w;
+    // 2. 4-Tap Subpixel Edge Anti-Aliasing
+    let sU = textureSampleLevel(sceneTex, sceneSampler, in.uv + vec2<f32>(0.0, -texelSize.y), 0.0).rgb;
+    let sD = textureSampleLevel(sceneTex, sceneSampler, in.uv + vec2<f32>(0.0,  texelSize.y), 0.0).rgb;
+    let sL = textureSampleLevel(sceneTex, sceneSampler, in.uv + vec2<f32>(-texelSize.x, 0.0), 0.0).rgb;
+    let sR = textureSampleLevel(sceneTex, sceneSampler, in.uv + vec2<f32>( texelSize.x, 0.0), 0.0).rgb;
+    let crossAvg = (sU + sD + sL + sR) * 0.25;
+    let edgeDiff = abs(sU - sD) + abs(sL - sR);
+    let edgeContrast = dot(edgeDiff, vec3<f32>(0.299, 0.587, 0.114));
+    let aaBlend = smoothstep(0.14, 0.48, edgeContrast) * 0.45;
+    accum = mix(accum, crossAvg * wSum, aaBlend);
 
-    // Antique Cartographer's Parchment Border Vignette
+    var hdrBase = (accum / wSum);
+
+    // 3. Realms / Octopath Style Volumetric God Rays (Celestial Light Shafts)
+    let sunVirtualWorld = u.camPos.xyz + u.sunDir.xyz * 160.0;
+    let sunClip = u.viewProj * vec4<f32>(sunVirtualWorld, 1.0);
+    var godRays = vec3<f32>(0.0);
+
+    let isDaylight = smoothstep(0.08, 0.32, u.sunColor.y);
+    if (sunClip.w > 0.0 && isDaylight > 0.01) {
+        let sunNdc = sunClip.xyz / sunClip.w;
+        let sunUV = vec2<f32>(sunNdc.x * 0.5 + 0.5, 0.5 - sunNdc.y * 0.5);
+
+        let rayDelta = sunUV - in.uv;
+        let rayDist = length(rayDelta);
+        let rayDir = rayDelta / max(rayDist, 0.001);
+        let maxStep = min(rayDist, 0.60);
+        let stepVec = rayDir * (maxStep / 16.0);
+
+        var rayCoord = in.uv;
+        var raySum = 0.0;
+        var decay = 1.0;
+
+        for (var s = 0; s < 16; s = s + 1) {
+            rayCoord += stepVec;
+            let sTap = textureSampleLevel(sceneTex, sceneSampler, clamp(rayCoord, vec2<f32>(0.002), vec2<f32>(0.998)), 0.0);
+            let tapLuma = dot(sTap.rgb, vec3<f32>(0.299, 0.587, 0.114));
+            let isSky = smoothstep(95.0, 210.0, sTap.a);
+            let brightGlint = smoothstep(1.10, 2.0, tapLuma) * 0.35;
+            let rayGlint = max(isSky, brightGlint);
+            raySum += rayGlint * decay;
+            decay *= 0.91;
+        }
+
+        let radialFalloff = smoothstep(1.25, 0.05, rayDist);
+        let sunVis = clamp(u.sunDir.y * 1.25, 0.0, 1.0);
+        godRays = (raySum / 16.0) * u.sunColor.rgb * (0.14 * sunVis * isDaylight * radialFalloff);
+    }
+
+    // 4. Soft Atmospheric Bloom & Warm Light Spill
+    let bloomLuma = max(0.0, dot(hdrBase, vec3<f32>(0.299, 0.587, 0.114)) - 0.95);
+    let bloomColor = hdrBase * (bloomLuma * 0.38);
+    var hdr = (hdrBase + bloomColor + godRays) * u.sunColor.w;
+
+    // 5. Subtle Miniature Diorama Vignette
     let centered = in.uv - vec2<f32>(0.5, 0.5);
-    let vig = 1.0 - dot(centered, centered) * 0.34;
+    let vig = 1.0 - dot(centered, centered) * 0.38;
     hdr *= vig;
 
+    // 6. Filmic ACES Tone Mapping & Warm Color Grading
     var mapped = acesFilmic(hdr);
-    mapped = pow(mapped, vec3<f32>(1.0 / 2.2));
+    let luma = dot(mapped, vec3<f32>(0.2126, 0.7152, 0.0722));
+    mapped = clamp(mix(vec3<f32>(luma), mapped, 1.18), vec3<f32>(0.0), vec3<f32>(1.0));
     return vec4<f32>(mapped, 1.0);
 }
 )";
@@ -903,6 +1250,8 @@ struct SceneUniforms {
     camBasisY     : vec4<f32>,
     camBasisZ     : vec4<f32>,
     heroPos       : vec4<f32>,
+    gridOrigin    : vec4<f32>,
+    discoveryGrid : array<vec4<f32>, 16>,
 };
 
 struct OverlayVertex2D {
@@ -953,10 +1302,29 @@ fn vs_overlay2d(@builtin(vertex_index) vertexIndex : u32) -> OverlayVSOut {
 @fragment
 fn fs_overlay2d(in : OverlayVSOut) -> @location(0) vec4<f32> {
     if (in.mode == 2u) {
+        // Analytical Rounded Rectangle / Box with 4x Rotated-Grid Supersampled Subpixel Coverage (RGSS 4x)
         let q = abs(in.localPos) - in.halfSize + vec2<f32>(in.radius, in.radius);
         let dist = length(max(q, vec2<f32>(0.0, 0.0))) + min(max(q.x, q.y), 0.0) - in.radius;
-        let alpha = clamp(0.5 - dist, 0.0, 1.0);
-        if (alpha <= 0.0) {
+        let fw = max(fwidth(dist), 0.70);
+        let s0 = clamp(0.5 - (dist + 0.375 * fw - 0.125 * fw) / fw, 0.0, 1.0);
+        let s1 = clamp(0.5 - (dist - 0.125 * fw - 0.375 * fw) / fw, 0.0, 1.0);
+        let s2 = clamp(0.5 - (dist + 0.125 * fw + 0.375 * fw) / fw, 0.0, 1.0);
+        let s3 = clamp(0.5 - (dist - 0.375 * fw + 0.125 * fw) / fw, 0.0, 1.0);
+        let alpha = (s0 + s1 + s2 + s3) * 0.25;
+        if (alpha <= 0.001) {
+            discard;
+        }
+        return vec4<f32>(in.color.rgb, in.color.a * alpha);
+    } else if (in.mode == 6u) {
+        // Analytical 4x Antialiased Vector Line Stroke (Eatsbits subpixel coverage)
+        let dist = abs(in.localPos.x) - in.radius;
+        let fw = max(fwidth(dist), 0.70);
+        let s0 = clamp(0.5 - (dist + 0.375 * fw - 0.125 * fw) / fw, 0.0, 1.0);
+        let s1 = clamp(0.5 - (dist - 0.125 * fw - 0.375 * fw) / fw, 0.0, 1.0);
+        let s2 = clamp(0.5 - (dist + 0.125 * fw + 0.375 * fw) / fw, 0.0, 1.0);
+        let s3 = clamp(0.5 - (dist - 0.375 * fw + 0.125 * fw) / fw, 0.0, 1.0);
+        let alpha = (s0 + s1 + s2 + s3) * 0.25;
+        if (alpha <= 0.001) {
             discard;
         }
         return vec4<f32>(in.color.rgb, in.color.a * alpha);
@@ -1062,6 +1430,13 @@ void fillSceneUniforms(const ChartWorld& world, uint32_t width, uint32_t height,
     outU.heroPos[1] = world.hero().pos.y;
     outU.heroPos[2] = world.hero().pos.z;
     outU.heroPos[3] = cam.atlasZoom;
+
+    outU.gridOrigin[0] = static_cast<float>(world.activeChunkX());
+    outU.gridOrigin[1] = static_cast<float>(world.activeChunkZ());
+    outU.gridOrigin[2] = ChartWorld::kChunkSize;
+    outU.gridOrigin[3] = static_cast<float>(ChartWorld::kChunkRadius);
+
+    world.fillDiscoveryGrid(world.activeChunkX(), world.activeChunkZ(), outU.discoveryGrid);
 }
 
 struct GpuChartContext {
@@ -1125,12 +1500,86 @@ struct GpuChartContext {
         targetWidth = width;
         targetHeight = height;
 
+#if defined(__EMSCRIPTEN__)
+        int hasDevice = EM_ASM_INT({
+            return (typeof Module !== 'undefined' && Module['preinitializedWebGPUDevice']) ? 1 : 0;
+        });
+        if (hasDevice) {
+            device = emscripten_webgpu_get_device();
+        }
+
+        WGPUInstanceDescriptor instDesc{};
+        instance = wgpuCreateInstance(&instDesc);
+
+        if (optWindow) {
+            WGPUEmscriptenSurfaceSourceCanvasHTMLSelector canvasDesc{};
+            canvasDesc.chain.sType = WGPUSType_EmscriptenSurfaceSourceCanvasHTMLSelector;
+            canvasDesc.selector = WGPUStringView{ "#canvas", WGPU_STRLEN };
+
+            WGPUSurfaceDescriptor surfDesc{};
+            surfDesc.nextInChain = reinterpret_cast<WGPUChainedStruct*>(&canvasDesc);
+            surface = wgpuInstanceCreateSurface(instance, &surfDesc);
+        }
+
+        if (!device && instance) {
+            struct ReqData {
+                WGPUAdapter adapter{nullptr};
+                WGPUDevice device{nullptr};
+            } req;
+
+            WGPURequestAdapterOptions aOpt{};
+            aOpt.compatibleSurface = surface;
+            aOpt.powerPreference = WGPUPowerPreference_HighPerformance;
+
+            WGPURequestAdapterCallbackInfo aCb{};
+            aCb.mode = WGPUCallbackMode_AllowProcessEvents;
+            aCb.callback = [](WGPURequestAdapterStatus status, WGPUAdapter adp, WGPUStringView, void* u, void*) {
+                if (status == WGPURequestAdapterStatus_Success) static_cast<ReqData*>(u)->adapter = adp;
+            };
+            aCb.userdata1 = &req;
+            wgpuInstanceRequestAdapter(instance, &aOpt, aCb);
+            wgpuInstanceProcessEvents(instance);
+            adapter = req.adapter;
+
+            if (adapter) {
+                WGPUDeviceDescriptor dDesc{};
+                WGPURequestDeviceCallbackInfo dCb{};
+                dCb.mode = WGPUCallbackMode_AllowProcessEvents;
+                dCb.callback = [](WGPURequestDeviceStatus status, WGPUDevice dev, WGPUStringView, void* u, void*) {
+                    if (status == WGPURequestDeviceStatus_Success) static_cast<ReqData*>(u)->device = dev;
+                };
+                dCb.userdata1 = &req;
+                wgpuAdapterRequestDevice(adapter, &dDesc, dCb);
+                wgpuInstanceProcessEvents(instance);
+                device = req.device;
+            }
+        }
+
+        if (!device) {
+            device = emscripten_webgpu_get_device();
+        }
+        if (!device) {
+            std::cerr << "[ChartRenderer] Failed to acquire WebGPU device in browser environment.\n";
+            return false;
+        }
+
+        queue = wgpuDeviceGetQueue(device);
+
+        if (surface) {
+            outputFormat = WGPUTextureFormat_BGRA8Unorm;
+            configureSurface(width, height);
+        } else {
+            outputFormat = WGPUTextureFormat_RGBA8Unorm;
+        }
+
+        return createPipelinesAndResources(width, height, atlas);
+#else
         WGPUInstanceDescriptor instDesc{};
         instance = wgpuCreateInstance(&instDesc);
         if (!instance) return false;
 
         if (optWindow) {
-#if defined(_WIN32) && !defined(__EMSCRIPTEN__)
+#if defined(_WIN32)
             HWND hwnd = glfwGetWin32Window(optWindow);
             WGPUSurfaceSourceWindowsHWND winDesc{};
             winDesc.chain.sType = WGPUSType_SurfaceSourceWindowsHWND;
@@ -1187,6 +1636,7 @@ struct GpuChartContext {
         }
 
         return createPipelinesAndResources(width, height, atlas);
+#endif
     }
 
     void configureSurface(uint32_t width, uint32_t height) {
@@ -1203,7 +1653,7 @@ struct GpuChartContext {
     }
 
     bool createPipelinesAndResources(uint32_t width, uint32_t height, const InkAtlasData& atlas) {
-        std::string sceneWgsl = std::string(kSceneWgslPart1) + kSceneWgslPart2;
+        std::string sceneWgsl = std::string(kSceneWgslPart1) + kSceneWgslPart2a + kSceneWgslPart2b + kSceneWgslPart3;
         WGPUShaderModule shadowSM  = createShaderModule(device, kShadowWgslSource);
         WGPUShaderModule sceneSM   = createShaderModule(device, sceneWgsl.c_str());
         WGPUShaderModule postSM    = createShaderModule(device, kPostProcessWgslSource);
@@ -1216,10 +1666,10 @@ struct GpuChartContext {
         shEntries[0].visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
         shEntries[0].buffer.type = WGPUBufferBindingType_Uniform;
         shEntries[1].binding = 1;
-        shEntries[1].visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
+        shEntries[1].visibility = WGPUShaderStage_Vertex;
         shEntries[1].buffer.type = WGPUBufferBindingType_ReadOnlyStorage;
         shEntries[2].binding = 2;
-        shEntries[2].visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
+        shEntries[2].visibility = WGPUShaderStage_Vertex;
         shEntries[2].buffer.type = WGPUBufferBindingType_ReadOnlyStorage;
         shEntries[3].binding = 3;
         shEntries[3].visibility = WGPUShaderStage_Fragment;
@@ -1278,11 +1728,18 @@ struct GpuChartContext {
         bglEntries[0].binding = 0;
         bglEntries[0].visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
         bglEntries[0].buffer.type = WGPUBufferBindingType_Uniform;
-        for (uint32_t b = 1; b <= 4; ++b) {
-            bglEntries[b].binding = b;
-            bglEntries[b].visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
-            bglEntries[b].buffer.type = WGPUBufferBindingType_ReadOnlyStorage;
-        }
+        bglEntries[1].binding = 1;
+        bglEntries[1].visibility = WGPUShaderStage_Vertex;
+        bglEntries[1].buffer.type = WGPUBufferBindingType_ReadOnlyStorage;
+        bglEntries[2].binding = 2;
+        bglEntries[2].visibility = WGPUShaderStage_Vertex;
+        bglEntries[2].buffer.type = WGPUBufferBindingType_ReadOnlyStorage;
+        bglEntries[3].binding = 3;
+        bglEntries[3].visibility = WGPUShaderStage_Fragment;
+        bglEntries[3].buffer.type = WGPUBufferBindingType_ReadOnlyStorage;
+        bglEntries[4].binding = 4;
+        bglEntries[4].visibility = WGPUShaderStage_Fragment;
+        bglEntries[4].buffer.type = WGPUBufferBindingType_ReadOnlyStorage;
         bglEntries[5].binding = 5;
         bglEntries[5].visibility = WGPUShaderStage_Fragment;
         bglEntries[5].texture.sampleType = WGPUTextureSampleType_Float;
@@ -2080,6 +2537,268 @@ bool ChartRenderer::renderToPng(ChartWorld& world, uint32_t width, uint32_t heig
     return writePngFile(outputPngPath, width, height, rgbaPixels.data());
 }
 
+struct ChartLoopContext {
+    ChartWorld* world{nullptr};
+    ChartScriptEngine* scriptEngine{nullptr};
+    std::string activeScript;
+    AudioFoleyEngine* foleyEngine{nullptr};
+    GLFWwindow* window{nullptr};
+    GpuChartContext* ctx{nullptr};
+    std::filesystem::file_time_type lastScriptWriteTime{};
+    double lastTime{0.0};
+    bool wasSpace{false};
+    bool wasLeftClick{false};
+    bool wasRightClick{false};
+    bool wasK{false};
+    bool wasE{false};
+    bool wasM{false};
+    bool was1{false};
+    bool was2{false};
+    bool was3{false};
+    bool was4{false};
+    bool wasT{false};
+    bool wasLeftBracket{false};
+    bool wasRightBracket{false};
+    bool atlasMode{false};
+    float targetAtlasZoom{0.0f};
+    float stepSoundCooldown{0.0f};
+    float touchMoveX{0.0f};
+    float touchMoveZ{0.0f};
+    bool touchSprintOrDodge{false};
+    ChartRenderer::FrameUpdateCallback frameCallback{nullptr};
+};
+
+static ChartLoopContext* s_activeLoop = nullptr;
+
+static bool switchChartScene(ChartLoopContext& l, const std::string& path) {
+    if (!std::filesystem::exists(path)) {
+        std::cerr << "[Eatscharted] Chart recipe not found: " << path << "\n";
+        return false;
+    }
+    if (l.scriptEngine->executeFile(path)) {
+        l.activeScript = path;
+#if !defined(__EMSCRIPTEN__)
+        try {
+            l.lastScriptWriteTime = std::filesystem::last_write_time(path);
+        } catch (...) {}
+#endif
+        l.world->rebuildWorldGeometry(l.world->hero().pos.x, l.world->hero().pos.z);
+        l.world->updateSimulation(0.016f, l.ctx->targetWidth, l.ctx->targetHeight);
+        l.ctx->uploadWorldAndDynamicEntities(*l.world, true);
+        l.world->clearMeshDirty();
+        std::cout << "[Eatscharted] Loaded chart recipe: " << path << "\n";
+#if defined(__EMSCRIPTEN__)
+        std::string jsCall = "if (window.onSceneLoaded) window.onSceneLoaded('" + path + "');";
+        emscripten_run_script(jsCall.c_str());
+#endif
+        return true;
+    }
+    return false;
+}
+
+static void renderSingleFrame(ChartLoopContext& l) {
+    glfwPollEvents();
+
+    double now = glfwGetTime();
+    float dt = static_cast<float>(now - l.lastTime);
+    if (dt < 0.0001f) dt = 0.0001f;
+    if (dt > 0.1f) dt = 0.1f;
+    l.lastTime = now;
+
+    int fbW = 0, fbH = 0;
+    glfwGetFramebufferSize(l.window, &fbW, &fbH);
+    if (fbW > 0 && fbH > 0 && (static_cast<uint32_t>(fbW) != l.ctx->targetWidth || static_cast<uint32_t>(fbH) != l.ctx->targetHeight)) {
+        l.ctx->configureSurface(static_cast<uint32_t>(fbW), static_cast<uint32_t>(fbH));
+        l.ctx->reallocateViewportTargets(static_cast<uint32_t>(fbW), static_cast<uint32_t>(fbH));
+    }
+
+#if !defined(__EMSCRIPTEN__)
+    // Live Eatscript hot-reload check
+    if (!l.activeScript.empty() && std::filesystem::exists(l.activeScript)) {
+        auto curWrite = std::filesystem::last_write_time(l.activeScript);
+        if (curWrite != l.lastScriptWriteTime) {
+            l.lastScriptWriteTime = curWrite;
+            if (l.scriptEngine->executeFile(l.activeScript)) {
+                l.world->rebuildWorldGeometry(l.world->hero().pos.x, l.world->hero().pos.z);
+                l.world->updateSimulation(dt, l.ctx->targetWidth, l.ctx->targetHeight);
+                l.ctx->uploadWorldAndDynamicEntities(*l.world, true);
+                l.world->clearMeshDirty();
+                std::cout << "[Eatscharted] Hot-reloaded '" << l.activeScript << "'\n";
+            }
+        }
+    }
+#endif
+
+    // Scene preset switching (1, 2, 3, 4)
+    bool k1 = glfwGetKey(l.window, GLFW_KEY_1) == GLFW_PRESS;
+    if (k1 && !l.was1) switchChartScene(l, "scenes/perilous_shores.eats");
+    l.was1 = k1;
+
+    bool k2 = glfwGetKey(l.window, GLFW_KEY_2) == GLFW_PRESS;
+    if (k2 && !l.was2) switchChartScene(l, "scenes/shattered_isles.eats");
+    l.was2 = k2;
+
+    bool k3 = glfwGetKey(l.window, GLFW_KEY_3) == GLFW_PRESS;
+    if (k3 && !l.was3) switchChartScene(l, "scenes/highland_kingdom.eats");
+    l.was3 = k3;
+
+    bool k4 = glfwGetKey(l.window, GLFW_KEY_4) == GLFW_PRESS;
+    if (k4 && !l.was4) switchChartScene(l, "scenes/sunken_sanctum_dungeon.eats");
+    l.was4 = k4;
+
+    // Cat Quest Tabletop Hero Movement (Keyboard + Mobile Analog Touch Stick)
+    float mx = l.touchMoveX;
+    float mz = l.touchMoveZ;
+    if (glfwGetKey(l.window, GLFW_KEY_W) == GLFW_PRESS || glfwGetKey(l.window, GLFW_KEY_UP) == GLFW_PRESS)    mz += 1.0f;
+    if (glfwGetKey(l.window, GLFW_KEY_S) == GLFW_PRESS || glfwGetKey(l.window, GLFW_KEY_DOWN) == GLFW_PRESS)  mz -= 1.0f;
+    if (glfwGetKey(l.window, GLFW_KEY_D) == GLFW_PRESS || glfwGetKey(l.window, GLFW_KEY_RIGHT) == GLFW_PRESS) mx += 1.0f;
+    if (glfwGetKey(l.window, GLFW_KEY_A) == GLFW_PRESS || glfwGetKey(l.window, GLFW_KEY_LEFT) == GLFW_PRESS)  mx -= 1.0f;
+    bool dodgeKey = l.touchSprintOrDodge ||
+                    (glfwGetKey(l.window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
+                     glfwGetKey(l.window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS);
+
+    bool wasSailing = l.world->hero().isSailing;
+    l.world->moveHero(mx, mz, dodgeKey, dt);
+    if (l.world->hero().isSailing != wasSailing) {
+        l.foleyEngine->triggerSound(FoleySound::OceanSplash, 0.9f);
+    }
+
+    l.stepSoundCooldown = std::max(0.0f, l.stepSoundCooldown - dt);
+    if ((std::abs(mx) > 0.01f || std::abs(mz) > 0.01f) && l.stepSoundCooldown <= 0.0f) {
+        l.foleyEngine->triggerSound(l.world->hero().isSailing ? FoleySound::OceanSplash : FoleySound::ParchmentStep, 0.35f);
+        l.stepSoundCooldown = l.world->hero().isSailing ? 0.35f : 0.172f;
+    }
+
+    // Melee Slash (Space / J / Desktop Left Click)
+    bool spDown = (glfwGetKey(l.window, GLFW_KEY_SPACE) == GLFW_PRESS || glfwGetKey(l.window, GLFW_KEY_J) == GLFW_PRESS);
+#if !defined(__EMSCRIPTEN__)
+    bool lcDown = (glfwGetMouseButton(l.window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS);
+#else
+    bool lcDown = false;
+#endif
+    if ((spDown && !l.wasSpace) || (lcDown && !l.wasLeftClick)) {
+        l.world->triggerMeleeSlash();
+        l.foleyEngine->triggerSound(FoleySound::SwordSlash, 0.85f);
+    }
+    l.wasSpace = spDown;
+    l.wasLeftClick = lcDown;
+
+    // Arcane Nova Spell (K / Desktop Right Click)
+    bool kDown  = (glfwGetKey(l.window, GLFW_KEY_K) == GLFW_PRESS);
+#if !defined(__EMSCRIPTEN__)
+    bool rcDown = (glfwGetMouseButton(l.window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS);
+#else
+    bool rcDown = false;
+#endif
+    if ((kDown && !l.wasK) || (rcDown && !l.wasRightClick)) {
+        l.world->triggerArcaneSpell();
+        l.foleyEngine->triggerSound(FoleySound::ArcaneNova, 0.95f);
+    }
+    l.wasK = kDown;
+    l.wasRightClick = rcDown;
+
+    // Enter / Exit One-Page Dungeon (E / Enter)
+    bool eDown = (glfwGetKey(l.window, GLFW_KEY_E) == GLFW_PRESS || glfwGetKey(l.window, GLFW_KEY_ENTER) == GLFW_PRESS);
+    if (eDown && !l.wasE) {
+        if (l.world->tryToggleNearbyDungeon()) {
+            l.foleyEngine->triggerSound(FoleySound::DungeonPortal, 1.0f);
+            l.world->updateSimulation(dt, l.ctx->targetWidth, l.ctx->targetHeight);
+            l.ctx->uploadWorldAndDynamicEntities(*l.world, true);
+            l.world->clearMeshDirty();
+        }
+    }
+    l.wasE = eDown;
+
+    // Zoom-to-Atlas Toggle (M / Z)
+    bool mDown = (glfwGetKey(l.window, GLFW_KEY_M) == GLFW_PRESS || glfwGetKey(l.window, GLFW_KEY_Z) == GLFW_PRESS);
+    if (mDown && !l.wasM) {
+        l.atlasMode = !l.atlasMode;
+        l.targetAtlasZoom = l.atlasMode ? 1.0f : 0.0f;
+    }
+    l.wasM = mDown;
+
+    // Day/Night Cycle Toggle (T) and Hour Stepping ([ / ])
+    bool tDown = (glfwGetKey(l.window, GLFW_KEY_T) == GLFW_PRESS);
+    if (tDown && !l.wasT) {
+        l.world->setUseDayNightCycle(!l.world->useDayNightCycle());
+        std::cout << "[Eatscharted] Day/Night Cycle " << (l.world->useDayNightCycle() ? "ENABLED" : "PAUSED") << "\n";
+    }
+    l.wasT = tDown;
+
+    bool leftBrack = (glfwGetKey(l.window, GLFW_KEY_LEFT_BRACKET) == GLFW_PRESS);
+    if (leftBrack && !l.wasLeftBracket) {
+        l.world->setTimeOfDay(l.world->timeOfDay() - (1.0f / 24.0f));
+        std::cout << "[Eatscharted] Time of Day stepped to: " << l.world->timeOfDay() << " (" << AtmosphereConfig::timePeriodName(l.world->timeOfDay()) << ")\n";
+    }
+    l.wasLeftBracket = leftBrack;
+
+    bool rightBrack = (glfwGetKey(l.window, GLFW_KEY_RIGHT_BRACKET) == GLFW_PRESS);
+    if (rightBrack && !l.wasRightBracket) {
+        l.world->setTimeOfDay(l.world->timeOfDay() + (1.0f / 24.0f));
+        std::cout << "[Eatscharted] Time of Day stepped to: " << l.world->timeOfDay() << " (" << AtmosphereConfig::timePeriodName(l.world->timeOfDay()) << ")\n";
+    }
+    l.wasRightBracket = rightBrack;
+
+    // Smoothly interpolate Cat Quest Tabletop Camera <-> High-Altitude Perilous Shores Atlas View
+    auto& cam = l.world->camera();
+    cam.atlasZoom = std::lerp(cam.atlasZoom, l.targetAtlasZoom, std::clamp(dt * 5.0f, 0.0f, 1.0f));
+
+    float camHeight = std::lerp(28.0f, 82.0f, cam.atlasZoom);
+    float camBackZ  = std::lerp(25.0f, 22.0f, cam.atlasZoom);
+    Vec3f desiredTarget = l.world->hero().pos;
+    Vec3f desiredPos    = {desiredTarget.x, desiredTarget.y + camHeight, desiredTarget.z - camBackZ};
+
+    float camFollow = std::clamp(dt * 8.0f, 0.0f, 1.0f);
+    cam.target.x   = std::lerp(cam.target.x,   desiredTarget.x, camFollow);
+    cam.target.y   = std::lerp(cam.target.y,   desiredTarget.y, camFollow);
+    cam.target.z   = std::lerp(cam.target.z,   desiredTarget.z, camFollow);
+    cam.position.x = std::lerp(cam.position.x, desiredPos.x,    camFollow);
+    cam.position.y = std::lerp(cam.position.y, desiredPos.y,    camFollow);
+    cam.position.z = std::lerp(cam.position.z, desiredPos.z,    camFollow);
+    cam.focusDistance = std::sqrt(camHeight * camHeight + camBackZ * camBackZ);
+
+    bool rebuildStatic = l.world->needsMeshUpload();
+    if (l.frameCallback) {
+        rebuildStatic = l.frameCallback(l.window, *l.world, dt) || rebuildStatic;
+    }
+
+    l.world->updateSimulation(dt, l.ctx->targetWidth, l.ctx->targetHeight);
+    l.ctx->uploadWorldAndDynamicEntities(*l.world, rebuildStatic);
+    l.world->clearMeshDirty();
+
+    WGPUSurfaceTexture surfTex{};
+    wgpuSurfaceGetCurrentTexture(l.ctx->surface, &surfTex);
+    if (surfTex.status != WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal &&
+        surfTex.status != WGPUSurfaceGetCurrentTextureStatus_SuccessSuboptimal) {
+        return;
+    }
+
+    WGPUTextureView backbufferView = wgpuTextureCreateView(surfTex.texture, nullptr);
+
+    SceneUniforms u{};
+    fillSceneUniforms(*l.world, l.ctx->targetWidth, l.ctx->targetHeight, static_cast<float>(now), u);
+    wgpuQueueWriteBuffer(l.ctx->queue, l.ctx->uniformBuffer, 0, &u, sizeof(SceneUniforms));
+
+    WGPUCommandEncoder encoder = wgpuDeviceCreateCommandEncoder(l.ctx->device, nullptr);
+    l.ctx->recordFramePasses(encoder, backbufferView);
+    WGPUCommandBuffer cmd = wgpuCommandEncoderFinish(encoder, nullptr);
+    wgpuQueueSubmit(l.ctx->queue, 1, &cmd);
+#if !defined(__EMSCRIPTEN__)
+    wgpuSurfacePresent(l.ctx->surface);
+#else
+    static bool s_firstFramePresented = false;
+    if (!s_firstFramePresented) {
+        s_firstFramePresented = true;
+        emscripten_run_script("if (window.hideAppLoadingScreen) window.hideAppLoadingScreen();");
+    }
+#endif
+
+    wgpuCommandBufferRelease(cmd);
+    wgpuCommandEncoderRelease(encoder);
+    wgpuTextureViewRelease(backbufferView);
+    wgpuTextureRelease(surfTex.texture);
+}
+
 int ChartRenderer::runInteractiveWindow(
     ChartWorld& world,
     ChartScriptEngine& scriptEngine,
@@ -2111,12 +2830,14 @@ int ChartRenderer::runInteractiveWindow(
 
     world.updateSimulation(0.016f, width, height);
     ctx.uploadWorldAndDynamicEntities(world, true);
+    world.clearMeshDirty();
 
-    std::string activeScript = watchedScriptPath;
     std::filesystem::file_time_type lastScriptWriteTime{};
-    if (!activeScript.empty() && std::filesystem::exists(activeScript)) {
-        lastScriptWriteTime = std::filesystem::last_write_time(activeScript);
+#if !defined(__EMSCRIPTEN__)
+    if (!watchedScriptPath.empty() && std::filesystem::exists(watchedScriptPath)) {
+        lastScriptWriteTime = std::filesystem::last_write_time(watchedScriptPath);
     }
+#endif
 
     std::cout << "\n====================================================================\n"
               << "  Eatscharted: 2.5D Living Cartography (Perilous Shores x Cat Quest)\n"
@@ -2126,188 +2847,168 @@ int ChartRenderer::runInteractiveWindow(
               << "  Space / J / Left Click  : Melee Sword Slash\n"
               << "  K / Right Click         : Cast Arcane Nova (Map-Surface Telegraph)\n"
               << "  E / Enter               : Enter / Exit Watabou One-Page Dungeon\n"
-              << "  M / Z                   : Toggle Zoom-to-Atlas Cartographic View\n"
+              << "  T                       : Toggle Dynamic Day/Night Cycle\n"
+              << "  [ / ]                   : Step Time of Day (-1 hr / +1 hr)\n"
+              << "  M / Z or Scroll Wheel   : Zoom-to-Atlas Cartographic View\n"
               << "  1 / 2 / 3 / 4           : Switch Chart (1: Perilous Shores, 2: Shattered Isles,\n"
               << "                            3: Highland Kingdom, 4: Sunken Sanctum Dungeon)\n"
               << "====================================================================\n\n";
 
-    double lastTime = glfwGetTime();
-    bool wasSpace = false, wasLeftClick = false, wasRightClick = false, wasK = false;
-    bool wasE = false, wasM = false, was1 = false, was2 = false, was3 = false, was4 = false;
-    bool atlasMode = false;
-    float stepSoundCooldown = 0.0f;
+    ChartLoopContext loop;
+    loop.world = &world;
+    loop.scriptEngine = &scriptEngine;
+    loop.activeScript = watchedScriptPath;
+    loop.foleyEngine = &foleyEngine;
+    loop.window = window;
+    loop.ctx = &ctx;
+    loop.lastScriptWriteTime = lastScriptWriteTime;
+    loop.lastTime = glfwGetTime();
+    loop.frameCallback = std::move(frameCallback);
+    s_activeLoop = &loop;
 
-    auto switchScene = [&](const std::string& path) {
-        if (std::filesystem::exists(path) && scriptEngine.executeFile(path)) {
-            activeScript = path;
-            lastScriptWriteTime = std::filesystem::last_write_time(path);
-            world.updateSimulation(0.016f, ctx.targetWidth, ctx.targetHeight);
-            ctx.uploadWorldAndDynamicEntities(world, true);
-            std::cout << "[Eatscharted] Loaded chart recipe: " << path << "\n";
+    glfwSetWindowUserPointer(window, &loop);
+    glfwSetScrollCallback(window, [](GLFWwindow* w, double, double yoffset) {
+        auto* l = static_cast<ChartLoopContext*>(glfwGetWindowUserPointer(w));
+        if (l) {
+            l->targetAtlasZoom = std::clamp(l->targetAtlasZoom - static_cast<float>(yoffset) * 0.14f, 0.0f, 1.0f);
+            l->atlasMode = (l->targetAtlasZoom >= 0.5f);
         }
-    };
+    });
 
+#if defined(__EMSCRIPTEN__)
+    static ChartLoopContext s_webLoop;
+    static GpuChartContext s_webCtx;
+    s_webCtx = std::move(ctx);
+    s_webLoop = loop;
+    s_webLoop.ctx = &s_webCtx;
+    s_activeLoop = &s_webLoop;
+    glfwSetWindowUserPointer(window, &s_webLoop);
+
+    emscripten_set_main_loop_arg([](void* arg) {
+        auto* l = static_cast<ChartLoopContext*>(arg);
+        if (l && l->window && !glfwWindowShouldClose(l->window)) {
+            renderSingleFrame(*l);
+        }
+    }, &s_webLoop, 0, 1);
+    return 0;
+#else
     while (!glfwWindowShouldClose(window)) {
-        glfwPollEvents();
-
-        double now = glfwGetTime();
-        float dt = static_cast<float>(now - lastTime);
-        if (dt < 0.0001f) dt = 0.0001f;
-        if (dt > 0.1f) dt = 0.1f;
-        lastTime = now;
-
-        int fbW = 0, fbH = 0;
-        glfwGetFramebufferSize(window, &fbW, &fbH);
-        if (fbW > 0 && fbH > 0 && (static_cast<uint32_t>(fbW) != ctx.targetWidth || static_cast<uint32_t>(fbH) != ctx.targetHeight)) {
-            ctx.configureSurface(static_cast<uint32_t>(fbW), static_cast<uint32_t>(fbH));
-            ctx.reallocateViewportTargets(static_cast<uint32_t>(fbW), static_cast<uint32_t>(fbH));
-        }
-
-        // Live Eatscript hot-reload check
-        if (!activeScript.empty() && std::filesystem::exists(activeScript)) {
-            auto curWrite = std::filesystem::last_write_time(activeScript);
-            if (curWrite != lastScriptWriteTime) {
-                lastScriptWriteTime = curWrite;
-                if (scriptEngine.executeFile(activeScript)) {
-                    world.updateSimulation(dt, ctx.targetWidth, ctx.targetHeight);
-                    ctx.uploadWorldAndDynamicEntities(world, true);
-                    std::cout << "[Eatscharted] Hot-reloaded '" << activeScript << "'\n";
-                }
-            }
-        }
-
-        // Scene preset switching (1, 2, 3, 4)
-        bool k1 = glfwGetKey(window, GLFW_KEY_1) == GLFW_PRESS;
-        if (k1 && !was1) switchScene("scenes/perilous_shores.eats");
-        was1 = k1;
-
-        bool k2 = glfwGetKey(window, GLFW_KEY_2) == GLFW_PRESS;
-        if (k2 && !was2) switchScene("scenes/shattered_isles.eats");
-        was2 = k2;
-
-        bool k3 = glfwGetKey(window, GLFW_KEY_3) == GLFW_PRESS;
-        if (k3 && !was3) switchScene("scenes/highland_kingdom.eats");
-        was3 = k3;
-
-        bool k4 = glfwGetKey(window, GLFW_KEY_4) == GLFW_PRESS;
-        if (k4 && !was4) switchScene("scenes/sunken_sanctum_dungeon.eats");
-        was4 = k4;
-
-        // Cat Quest Tabletop Hero Movement
-        float mx = 0.0f, mz = 0.0f;
-        if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS)    mz += 1.0f;
-        if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS)  mz -= 1.0f;
-        if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS) mx += 1.0f;
-        if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS)  mx -= 1.0f;
-        bool dodgeKey = (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS ||
-                         glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS);
-
-        bool wasSailing = world.hero().isSailing;
-        world.moveHero(mx, mz, dodgeKey, dt);
-        if (world.hero().isSailing != wasSailing) {
-            foleyEngine.triggerSound(FoleySound::OceanSplash, 0.9f);
-        }
-
-        stepSoundCooldown = std::max(0.0f, stepSoundCooldown - dt);
-        if ((std::abs(mx) > 0.01f || std::abs(mz) > 0.01f) && stepSoundCooldown <= 0.0f) {
-            foleyEngine.triggerSound(world.hero().isSailing ? FoleySound::OceanSplash : FoleySound::ParchmentStep, 0.35f);
-            stepSoundCooldown = 0.28f;
-        }
-
-        // Melee Slash (Space / J / Left Click)
-        bool spDown = (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_J) == GLFW_PRESS);
-        bool lcDown = (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS);
-        if ((spDown && !wasSpace) || (lcDown && !wasLeftClick)) {
-            world.triggerMeleeSlash();
-            foleyEngine.triggerSound(FoleySound::SwordSlash, 0.85f);
-        }
-        wasSpace = spDown;
-        wasLeftClick = lcDown;
-
-        // Arcane Nova Spell (K / Right Click)
-        bool kDown  = (glfwGetKey(window, GLFW_KEY_K) == GLFW_PRESS);
-        bool rcDown = (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS);
-        if ((kDown && !wasK) || (rcDown && !wasRightClick)) {
-            world.triggerArcaneSpell();
-            foleyEngine.triggerSound(FoleySound::ArcaneNova, 0.95f);
-        }
-        wasK = kDown;
-        wasRightClick = rcDown;
-
-        // Enter / Exit One-Page Dungeon (E / Enter)
-        bool eDown = (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_ENTER) == GLFW_PRESS);
-        if (eDown && !wasE) {
-            if (world.tryToggleNearbyDungeon()) {
-                foleyEngine.triggerSound(FoleySound::DungeonPortal, 1.0f);
-                world.updateSimulation(dt, ctx.targetWidth, ctx.targetHeight);
-                ctx.uploadWorldAndDynamicEntities(world, true);
-            }
-        }
-        wasE = eDown;
-
-        // Zoom-to-Atlas Toggle (M / Z)
-        bool mDown = (glfwGetKey(window, GLFW_KEY_M) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_Z) == GLFW_PRESS);
-        if (mDown && !wasM) {
-            atlasMode = !atlasMode;
-        }
-        wasM = mDown;
-
-        // Smoothly interpolate Cat Quest Tabletop Camera <-> High-Altitude Perilous Shores Atlas View
-        auto& cam = world.camera();
-        float targetAtlas = atlasMode ? 1.0f : 0.0f;
-        cam.atlasZoom = std::lerp(cam.atlasZoom, targetAtlas, std::clamp(dt * 5.0f, 0.0f, 1.0f));
-
-        float camHeight = std::lerp(28.0f, 82.0f, cam.atlasZoom);
-        float camBackZ  = std::lerp(25.0f, 22.0f, cam.atlasZoom);
-        Vec3f desiredTarget = world.hero().pos;
-        Vec3f desiredPos    = {desiredTarget.x, desiredTarget.y + camHeight, desiredTarget.z - camBackZ};
-
-        float camFollow = std::clamp(dt * 8.0f, 0.0f, 1.0f);
-        cam.target.x   = std::lerp(cam.target.x,   desiredTarget.x, camFollow);
-        cam.target.y   = std::lerp(cam.target.y,   desiredTarget.y, camFollow);
-        cam.target.z   = std::lerp(cam.target.z,   desiredTarget.z, camFollow);
-        cam.position.x = std::lerp(cam.position.x, desiredPos.x,    camFollow);
-        cam.position.y = std::lerp(cam.position.y, desiredPos.y,    camFollow);
-        cam.position.z = std::lerp(cam.position.z, desiredPos.z,    camFollow);
-        cam.focusDistance = std::sqrt(camHeight * camHeight + camBackZ * camBackZ);
-
-        bool rebuildStatic = false;
-        if (frameCallback) {
-            rebuildStatic = frameCallback(window, world, dt);
-        }
-
-        world.updateSimulation(dt, ctx.targetWidth, ctx.targetHeight);
-        ctx.uploadWorldAndDynamicEntities(world, rebuildStatic);
-
-        WGPUSurfaceTexture surfTex{};
-        wgpuSurfaceGetCurrentTexture(ctx.surface, &surfTex);
-        if (surfTex.status != WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal &&
-            surfTex.status != WGPUSurfaceGetCurrentTextureStatus_SuccessSuboptimal) {
-            continue;
-        }
-
-        WGPUTextureView backbufferView = wgpuTextureCreateView(surfTex.texture, nullptr);
-
-        SceneUniforms u{};
-        fillSceneUniforms(world, ctx.targetWidth, ctx.targetHeight, static_cast<float>(now), u);
-        wgpuQueueWriteBuffer(ctx.queue, ctx.uniformBuffer, 0, &u, sizeof(SceneUniforms));
-
-        WGPUCommandEncoder encoder = wgpuDeviceCreateCommandEncoder(ctx.device, nullptr);
-        ctx.recordFramePasses(encoder, backbufferView);
-        WGPUCommandBuffer cmd = wgpuCommandEncoderFinish(encoder, nullptr);
-        wgpuQueueSubmit(ctx.queue, 1, &cmd);
-        wgpuSurfacePresent(ctx.surface);
-
-        wgpuCommandBufferRelease(cmd);
-        wgpuCommandEncoderRelease(encoder);
-        wgpuTextureViewRelease(backbufferView);
-        wgpuTextureRelease(surfTex.texture);
+        renderSingleFrame(loop);
     }
 
     ctx.shutdown();
     glfwDestroyWindow(window);
     glfwTerminate();
     return 0;
+#endif
 }
+
+#if defined(__EMSCRIPTEN__)
+extern "C" {
+EMSCRIPTEN_KEEPALIVE int eatscharted_load_scene(const char* scenePath) {
+    if (s_activeLoop && scenePath) {
+        return switchChartScene(*s_activeLoop, std::string(scenePath)) ? 1 : 0;
+    }
+    return 0;
+}
+EMSCRIPTEN_KEEPALIVE void eatscharted_set_time_of_day(float t) {
+    if (s_activeLoop && s_activeLoop->world) {
+        s_activeLoop->world->setTimeOfDay(t);
+    }
+}
+EMSCRIPTEN_KEEPALIVE float eatscharted_get_time_of_day() {
+    if (s_activeLoop && s_activeLoop->world) {
+        return s_activeLoop->world->timeOfDay();
+    }
+    return 0.36f;
+}
+EMSCRIPTEN_KEEPALIVE int eatscharted_toggle_time_progression() {
+    if (s_activeLoop && s_activeLoop->world) {
+        bool next = !s_activeLoop->world->useDayNightCycle();
+        s_activeLoop->world->setUseDayNightCycle(next);
+        return next ? 1 : 0;
+    }
+    return 1;
+}
+EMSCRIPTEN_KEEPALIVE void eatscharted_set_touch_move(float moveX, float moveZ, int sprintOrDodge) {
+    if (s_activeLoop) {
+        s_activeLoop->touchMoveX = moveX;
+        s_activeLoop->touchMoveZ = moveZ;
+        s_activeLoop->touchSprintOrDodge = (sprintOrDodge != 0);
+    }
+}
+EMSCRIPTEN_KEEPALIVE void eatscharted_trigger_slash() {
+    if (s_activeLoop && s_activeLoop->world && s_activeLoop->foleyEngine) {
+        s_activeLoop->world->triggerMeleeSlash();
+        s_activeLoop->foleyEngine->triggerSound(FoleySound::SwordSlash, 0.85f);
+    }
+}
+EMSCRIPTEN_KEEPALIVE void eatscharted_trigger_spell() {
+    if (s_activeLoop && s_activeLoop->world && s_activeLoop->foleyEngine) {
+        s_activeLoop->world->triggerArcaneSpell();
+        s_activeLoop->foleyEngine->triggerSound(FoleySound::ArcaneNova, 0.95f);
+    }
+}
+EMSCRIPTEN_KEEPALIVE int eatscharted_toggle_dungeon() {
+    if (s_activeLoop && s_activeLoop->world && s_activeLoop->foleyEngine && s_activeLoop->ctx) {
+        if (s_activeLoop->world->tryToggleNearbyDungeon()) {
+            s_activeLoop->foleyEngine->triggerSound(FoleySound::DungeonPortal, 1.0f);
+            s_activeLoop->world->updateSimulation(0.016f, s_activeLoop->ctx->targetWidth, s_activeLoop->ctx->targetHeight);
+            s_activeLoop->ctx->uploadWorldAndDynamicEntities(*s_activeLoop->world, true);
+            s_activeLoop->world->clearMeshDirty();
+            return 1;
+        }
+    }
+    return 0;
+}
+EMSCRIPTEN_KEEPALIVE int eatscharted_toggle_atlas() {
+    if (s_activeLoop) {
+        s_activeLoop->atlasMode = !s_activeLoop->atlasMode;
+        s_activeLoop->targetAtlasZoom = s_activeLoop->atlasMode ? 1.0f : 0.0f;
+        return s_activeLoop->atlasMode ? 1 : 0;
+    }
+    return 0;
+}
+EMSCRIPTEN_KEEPALIVE void eatscharted_add_atlas_zoom(float deltaZoom) {
+    if (s_activeLoop) {
+        s_activeLoop->targetAtlasZoom = std::clamp(s_activeLoop->targetAtlasZoom + deltaZoom, 0.0f, 1.0f);
+        s_activeLoop->atlasMode = (s_activeLoop->targetAtlasZoom >= 0.5f);
+    }
+}
+EMSCRIPTEN_KEEPALIVE int eatscharted_get_hero_hp() {
+    return (s_activeLoop && s_activeLoop->world) ? s_activeLoop->world->hero().hp : 120;
+}
+EMSCRIPTEN_KEEPALIVE int eatscharted_get_hero_max_hp() {
+    return (s_activeLoop && s_activeLoop->world) ? s_activeLoop->world->hero().maxHp : 120;
+}
+EMSCRIPTEN_KEEPALIVE int eatscharted_get_hero_level() {
+    return (s_activeLoop && s_activeLoop->world) ? s_activeLoop->world->hero().level : 1;
+}
+EMSCRIPTEN_KEEPALIVE int eatscharted_get_hero_gold() {
+    return (s_activeLoop && s_activeLoop->world) ? s_activeLoop->world->hero().gold : 50;
+}
+EMSCRIPTEN_KEEPALIVE int eatscharted_get_charted_chunks() {
+    return (s_activeLoop && s_activeLoop->world) ? static_cast<int>(s_activeLoop->world->discoveredChunkCount()) : 0;
+}
+EMSCRIPTEN_KEEPALIVE int eatscharted_is_sailing() {
+    return (s_activeLoop && s_activeLoop->world && s_activeLoop->world->hero().isSailing) ? 1 : 0;
+}
+EMSCRIPTEN_KEEPALIVE int eatscharted_is_dungeon_mode() {
+    return (s_activeLoop && s_activeLoop->world && s_activeLoop->world->voronoi().isDungeonMode()) ? 1 : 0;
+}
+EMSCRIPTEN_KEEPALIVE const char* eatscharted_get_region_name() {
+    if (s_activeLoop && s_activeLoop->world) {
+        return s_activeLoop->world->hero().activeRegionName.c_str();
+    }
+    return "PORT PAWVEN";
+}
+EMSCRIPTEN_KEEPALIVE const char* eatscharted_get_region_sub() {
+    if (s_activeLoop && s_activeLoop->world) {
+        return s_activeLoop->world->hero().activeRegionSub.c_str();
+    }
+    return "Royal Cartographer's Harbor";
+}
+}
+#endif
 
 } // namespace eatscharted

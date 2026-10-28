@@ -1,4 +1,5 @@
 #include "eatscharted/script_bindings.hpp"
+#include "eatscharted/procedural_names.hpp"
 #include "eatsbits/eatscript/stdlib.hpp"
 #include "eatsbits/eatscript/lexer.hpp"
 #include "eatsbits/eatscript/parser.hpp"
@@ -20,10 +21,13 @@ void ChartScriptEngine::registerChartBindings() {
     std::map<std::string, Value> inkDict;
     inkDict["MountainPeak"]   = Value(static_cast<int>(InkLayer::StandeeMountainPeak));
     inkDict["MountainRidge"]  = Value(static_cast<int>(InkLayer::StandeeMountainRidge));
+    inkDict["RockPillar"]     = Value(static_cast<int>(InkLayer::StandeeRockPillar));
+    inkDict["RockOutcrop"]    = Value(static_cast<int>(InkLayer::StandeeRockOutcrop));
     inkDict["SeaStack"]       = Value(static_cast<int>(InkLayer::StandeeSeaStack));
     inkDict["ForestOak"]      = Value(static_cast<int>(InkLayer::StandeeForestOak));
     inkDict["ForestPine"]     = Value(static_cast<int>(InkLayer::StandeeForestPine));
     inkDict["ForestPalm"]     = Value(static_cast<int>(InkLayer::StandeeForestPalm));
+    inkDict["GrassPatch"]     = Value(static_cast<int>(InkLayer::StandeeGrassPatch));
     inkDict["MarshReeds"]     = Value(static_cast<int>(InkLayer::StandeeMarshReeds));
     inkDict["TownKeep"]       = Value(static_cast<int>(InkLayer::StandeeTownKeep));
     inkDict["HamletCottage"]  = Value(static_cast<int>(InkLayer::StandeeHamletCottage));
@@ -100,6 +104,45 @@ void ChartScriptEngine::registerChartBindings() {
         return Value(true);
     });
 
+    evaluator_.registerMemberFunction("chart", "add_curved_banner", [this](const auto& args, const auto& kwargs) -> Value {
+        std::string text = resolveArg(args, kwargs, 0, "text", Value("Duskwoods")).asString();
+        float cx = resolveArg(args, kwargs, 1, "cx", Value(0.0)).asFloat();
+        float cz = resolveArg(args, kwargs, 2, "cz", Value(0.0)).asFloat();
+        float span = resolveArg(args, kwargs, 3, "span", Value(28.0)).asFloat();
+        float angleDeg = resolveArg(args, kwargs, 4, "angle", Value(0.0)).asFloat();
+        float curvature = resolveArg(args, kwargs, 5, "curve", Value(0.18)).asFloat();
+        float sz = resolveArg(args, kwargs, 6, "size", Value(2.5)).asFloat();
+        bool track = resolveArg(args, kwargs, 7, "track", Value(true)).asBoolean();
+
+        std::string bannerText = track ? ProceduralNameGenerator::formatCatQuestTracking(text) : text;
+        float rad = angleDeg * (3.14159265f / 180.0f);
+        CurvedMapBanner b = ProceduralNameGenerator::createCurvedBanner(bannerText, {cx, cz}, span, rad, curvature, sz, true, false);
+        world_.addCustomBanner(b.text, b.p0, b.p1, b.p2, b.letterSize);
+        return Value(true);
+    });
+
+    evaluator_.registerMemberFunction("chart", "generate_name", [](const auto& args, const auto& kwargs) -> Value {
+        int seed = resolveArg(args, kwargs, 0, "seed", Value(1492)).asInt();
+        std::string type = resolveArg(args, kwargs, 1, "type", Value("settlement")).asString();
+        if (type == "desert") {
+            return Value(ProceduralNameGenerator::generateRegionTitle(static_cast<uint32_t>(seed), BiomeId::AridSteppe));
+        } else if (type == "forest") {
+            return Value(ProceduralNameGenerator::generateRegionTitle(static_cast<uint32_t>(seed), BiomeId::DeciduousWoodland));
+        } else if (type == "mountain") {
+            return Value(ProceduralNameGenerator::generateRegionTitle(static_cast<uint32_t>(seed), BiomeId::AlpinePeak));
+        } else if (type == "dungeon") {
+            return Value(ProceduralNameGenerator::generateLocaleName(static_cast<uint32_t>(seed), BiomeId::AlpinePeak, PoiCategory::DungeonPortal));
+        } else {
+            return Value(ProceduralNameGenerator::generateLocaleName(static_cast<uint32_t>(seed), BiomeId::LushMeadow, PoiCategory::CitadelKeep));
+        }
+    });
+
+    evaluator_.registerMemberFunction("chart", "format_tracking", [](const auto& args, const auto& kwargs) -> Value {
+        std::string text = resolveArg(args, kwargs, 0, "text", Value("")).asString();
+        bool dbl = resolveArg(args, kwargs, 1, "double_space", Value(false)).asBoolean();
+        return Value(ProceduralNameGenerator::formatCatQuestTracking(text, dbl));
+    });
+
     evaluator_.registerMemberFunction("chart", "set_hero_pos", [this](const auto& args, const auto& kwargs) -> Value {
         float x = resolveArg(args, kwargs, 0, "x", Value(-4.0)).asFloat();
         float z = resolveArg(args, kwargs, 1, "z", Value(-2.0)).asFloat();
@@ -120,6 +163,18 @@ void ChartScriptEngine::registerChartBindings() {
         cam.target.z      = resolveArg(args, kwargs, 5, "tz", Value(cam.target.z)).asFloat();
         cam.fovDegrees    = resolveArg(args, kwargs, 6, "fov", Value(cam.fovDegrees)).asFloat();
         cam.horizonCurve  = resolveArg(args, kwargs, 7, "curve", Value(cam.horizonCurve)).asFloat();
+        return Value(true);
+    });
+
+    evaluator_.registerMemberFunction("chart", "set_day_night_cycle", [this](const auto& args, const auto& kwargs) -> Value {
+        bool enable = resolveArg(args, kwargs, 0, "enabled", Value(true)).asBoolean();
+        world_.setUseDayNightCycle(enable);
+        return Value(true);
+    });
+
+    evaluator_.registerMemberFunction("chart", "set_time_of_day", [this](const auto& args, const auto& kwargs) -> Value {
+        float t = resolveArg(args, kwargs, 0, "time", Value(world_.timeOfDay())).asFloat();
+        world_.setTimeOfDay(t);
         return Value(true);
     });
 }

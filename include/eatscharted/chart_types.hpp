@@ -10,7 +10,14 @@ namespace eatscharted {
 struct Vec2f {
     float x{0.0f};
     float y{0.0f};
+
+    constexpr Vec2f operator+(Vec2f o) const noexcept { return {x + o.x, y + o.y}; }
+    constexpr Vec2f operator-(Vec2f o) const noexcept { return {x - o.x, y - o.y}; }
+    constexpr Vec2f operator*(float s) const noexcept { return {x * s, y * s}; }
+    constexpr Vec2f operator/(float s) const noexcept { return {x / s, y / s}; }
 };
+
+inline constexpr Vec2f operator*(float s, Vec2f v) noexcept { return {v.x * s, v.y * s}; }
 
 struct Vec3f {
     float x{0.0f};
@@ -78,14 +85,19 @@ namespace InkLayer {
     constexpr uint16_t DungeonWallHatch    = 4;
     constexpr uint16_t InkCalligraphyInk   = 5;  // Solid/gold-rimmed ink for 3D map surface banners
 
-    // 2.5D Pop-Up Cartographic Standees (Watabou Perilous Shores inked style)
-    constexpr uint16_t StandeeMountainPeak = 6;  // Hand-inked mountain peak with hachure shadow side
-    constexpr uint16_t StandeeMountainRidge= 7;  // Secondary craggy ridge standee
-    constexpr uint16_t StandeeSeaStack     = 8;  // Offshore rocky sea stack pillar
-    constexpr uint16_t StandeeForestOak    = 9;  // Clumped deciduous ink-wash tree canopy
-    constexpr uint16_t StandeeForestPine   = 10; // Clustered boreal pine needles & trunks
-    constexpr uint16_t StandeeForestPalm   = 11; // Coastal curved palm cluster
-    constexpr uint16_t StandeeMarshReeds   = 12; // Wetland cattails & marsh tuft standee
+    // 2.5D Volumetric Standees (Realms-style 2.5D normal-mapped props & foliage)
+    constexpr uint16_t StandeeRockPillar   = 6;  // Faceted basalt/granite crag pillar (replaces land mountain peak)
+    constexpr uint16_t StandeeRockOutcrop  = 7;  // Secondary mossy boulder / rocky outcrop cluster
+    constexpr uint16_t StandeeSeaStack     = 8;  // Offshore jagged basalt sea stack with seafoam base
+    constexpr uint16_t StandeeForestOak    = 9;  // Realms-style 2.5D multi-tiered deciduous oak canopy & trunk
+    constexpr uint16_t StandeeForestPine   = 10; // Realms-style 2.5D layered boreal pine needles & trunk
+    constexpr uint16_t StandeeForestPalm   = 11; // Coastal curved palm & lush tropical frond cluster
+    constexpr uint16_t StandeeGrassPatch   = 12; // Realms-style 2.5D lush grass blades & wildflower tuft
+
+    // Legacy aliases for backwards-compatibility
+    constexpr uint16_t StandeeMountainPeak = StandeeRockPillar;
+    constexpr uint16_t StandeeMountainRidge= StandeeRockOutcrop;
+    constexpr uint16_t StandeeMarshReeds   = StandeeGrassPatch;
 
     // 2.5D Tabletop Settlement & Landmark Standees (Cat Quest style)
     constexpr uint16_t StandeeTownKeep     = 13; // Walled citadel keep with banners
@@ -113,6 +125,12 @@ namespace InkLayer {
     constexpr uint32_t kCount              = 32;
     constexpr uint32_t kTileSize           = 64;
 } // namespace InkLayer
+
+[[nodiscard]] constexpr uint32_t packBiomesAndLayer(BiomeId b0, BiomeId b1, uint16_t inkLayer) noexcept {
+    return static_cast<uint32_t>(b0) |
+           (static_cast<uint32_t>(b1) << 8u) |
+           (static_cast<uint32_t>(inkLayer) << 16u);
+}
 
 /**
  * Flags for ChartVertex / ChartFieldSample.
@@ -168,12 +186,13 @@ static_assert(sizeof(ChartVertex) == 64, "ChartVertex must be 64 bytes (4x vec4)
 namespace StandeeFlags {
     constexpr uint32_t None           = 0u;
     constexpr uint32_t FlipX          = 1u << 0u;
-    constexpr uint32_t WindSway       = 1u << 1u; // Trees & banners sway gently
+    constexpr uint32_t WindSway       = 1u << 1u; // Trees, grass & banners sway gently
     constexpr uint32_t IdleBob        = 1u << 2u; // Hero, companion & monsters breathe/bob
     constexpr uint32_t Emissive       = 1u << 3u; // Campfires, runes, slash arcs
     constexpr uint32_t PartableCanopy = 1u << 4u; // Fades/parts when hero walks behind it
     constexpr uint32_t PopUpTilt      = 1u << 5u; // Tilts slightly toward tabletop camera like a standee
     constexpr uint32_t HitFlash       = 1u << 6u; // Flashes white/crimson when struck in combat
+    constexpr uint32_t NoShadow       = 1u << 7u; // Skips shadow-map casting (for dense 2.5D grass tufts)
 } // namespace StandeeFlags
 
 /**
@@ -234,21 +253,21 @@ struct CameraConfig {
 
 struct AtmosphereConfig {
     Vec3f sunDirection{-0.52f, 0.64f, -0.56f};
-    Vec3f sunColor{1.48f, 1.32f, 1.05f};
-    Vec3f skyZenith{0.78f, 0.71f, 0.56f};   // Warm antique vellum zenith
-    Vec3f skyHorizon{0.91f, 0.84f, 0.68f};  // Sunlit parchment horizon
-    float fogDensity{0.0038f};
+    Vec3f sunColor{0.82f, 0.78f, 0.70f};
+    Vec3f skyZenith{0.20f, 0.38f, 0.62f};   // Warm antique vellum azure zenith
+    Vec3f skyHorizon{0.48f, 0.58f, 0.68f};  // Sunlit parchment horizon
+    float fogDensity{0.0030f};
     float fogBaseHeight{1.0f};
     float fogHeightFalloff{0.06f};
-    float exposure{1.02f};
+    float exposure{0.92f};
     float timeOfDay{0.42f};
     float inkDensity{1.0f};                 // Strength of India-ink hachures & shoreline rings
 
     [[nodiscard]] static const char* timePeriodName(float t) noexcept {
         float frac = t - std::floor(t);
         if (frac < 0.0f) frac += 1.0f;
-        if (frac < 0.22f || frac >= 0.86f) return "Starlit Ink Watch";
-        if (frac < 0.32f) return "Dawn Wash";
+        if (frac < 0.20f || frac >= 0.85f) return "Starlit Midnight Watch";
+        if (frac < 0.32f) return "Golden Dawn Wash";
         if (frac < 0.68f) return "Cartographer's Noon";
         return "Gilded Vellum Dusk";
     }
@@ -259,15 +278,40 @@ struct AtmosphereConfig {
 
         AtmosphereConfig cfg{};
         cfg.timeOfDay = t;
-        // Smooth sun arc across the tabletop map
-        float angle = (t - 0.25f) * 6.2831853f;
-        float elev = std::sin(angle);
-        float dayFactor = std::clamp(elev * 1.4f + 0.35f, 0.0f, 1.0f);
 
+        // t: 0.00 = Midnight, 0.25 = Dawn (0600), 0.50 = Noon (1200), 0.75 = Dusk (1800), 1.00 = Midnight
+        float sunAngle = (t - 0.25f) * 6.2831853f; // 0 at dawn, pi/2 at noon, pi at dusk
+        float sunElev = std::sin(sunAngle); // > 0 during day, < 0 at night
+
+        // Smooth day/night curve: night is cleanly dark from 19:30 to 04:30.
+        // Dawn begins at ~05:00, reaching full daylight by 07:00.
+        // Sunset peaks at 18:00 (the golden sweet spot) and settles into night by 19:30.
+        float dayFactor = std::clamp((sunElev + 0.15f) / 0.35f, 0.0f, 1.0f);
+        dayFactor = dayFactor * dayFactor * (3.0f - 2.0f * dayFactor); // smoothstep curve
+
+        // Dusk / Dawn golden hour glow: peaks at sunElev = 0 (06:00 and 18:00)
+        float duskDawnFactor = std::clamp(1.0f - std::abs(sunElev) * 4.2f, 0.0f, 1.0f);
+
+        // Option A: Continuous Clockwork Celestial Orbit (Astrolabe / Sundial)
+        // Directional light revolves in a smooth 360-degree clockwork sweep:
+        // - At 12:00 (Noon, t=0.50): Light is South (-Z), shadows cast directly North / UP (+Z).
+        // - At 18:00 (Dusk, t=0.75): Light is West (-X), shadows cast hard East / RIGHT (+X).
+        // - At 00:00 (Midnight, t=0.00): Light is North (+Z), shadows cast South / DOWN (-Z).
+        // - At 06:00 (Dawn, t=0.25): Light is East (+X), shadows cast hard West / LEFT (-X).
+        float elev = 0.30f;
+        if (sunElev >= 0.0f) {
+            // Day Sun: rises high in zenith at noon (0.76) for crisp short drop shadows
+            elev += 0.46f * std::sin(sunAngle);
+        } else {
+            // Night Moon: climbs to 0.50 at midnight for clear, beautiful starlit drop shadows
+            elev += 0.20f * (-std::sin(sunAngle));
+        }
+        float horiz = std::sqrt(std::max(0.01f, 1.0f - elev * elev));
+        float clockAngle = t * 6.2831853f;
         cfg.sunDirection = {
-            -std::cos(angle) * 0.65f,
-            std::max(0.22f, std::abs(elev) * 0.72f + 0.20f),
-            -0.55f
+            horiz * std::sin(clockAngle),
+            elev,
+            horiz * std::cos(clockAngle)
         };
         float len = std::sqrt(cfg.sunDirection.x * cfg.sunDirection.x +
                               cfg.sunDirection.y * cfg.sunDirection.y +
@@ -278,24 +322,55 @@ struct AtmosphereConfig {
             cfg.sunDirection.z /= len;
         }
 
-        // Blend between warm sunlit vellum and candlelit midnight chart
+        // Sun & Light Radiance
+        // Day: warm crisp sunlight calibrated to match the optimal 18:00 gamma and rich color saturation.
+        // Dusk/Dawn: golden-amber/rose. Night: near-pitch moonlight (almost total darkness).
+        Vec3f daySunCol   {0.82f, 0.78f, 0.70f};
+        Vec3f duskSunCol  {1.15f, 0.74f, 0.38f};
+        Vec3f nightMoonCol{0.025f, 0.040f, 0.075f}; // Dim starlit moonlight
+        Vec3f activeSun = {
+            (1.0f - duskDawnFactor) * daySunCol.x + duskDawnFactor * duskSunCol.x,
+            (1.0f - duskDawnFactor) * daySunCol.y + duskDawnFactor * duskSunCol.y,
+            (1.0f - duskDawnFactor) * daySunCol.z + duskDawnFactor * duskSunCol.z
+        };
         cfg.sunColor = {
-            0.55f + 0.95f * dayFactor,
-            0.52f + 0.82f * dayFactor,
-            0.68f + 0.40f * dayFactor
+            (1.0f - dayFactor) * nightMoonCol.x + dayFactor * activeSun.x,
+            (1.0f - dayFactor) * nightMoonCol.y + dayFactor * activeSun.y,
+            (1.0f - dayFactor) * nightMoonCol.z + dayFactor * activeSun.z
+        };
+
+        // Sky Zenith: Fresh Azure blue at noon, warm coral at sunset, pitch starlit indigo at midnight
+        Vec3f dayZenith   {0.20f, 0.38f, 0.62f};
+        Vec3f duskZenith  {0.36f, 0.20f, 0.44f};
+        Vec3f nightZenith {0.002f, 0.003f, 0.008f};
+        Vec3f activeZenith = {
+            (1.0f - duskDawnFactor) * dayZenith.x + duskDawnFactor * duskZenith.x,
+            (1.0f - duskDawnFactor) * dayZenith.y + duskDawnFactor * duskZenith.y,
+            (1.0f - duskDawnFactor) * dayZenith.z + duskDawnFactor * duskZenith.z
         };
         cfg.skyZenith = {
-            0.14f + 0.64f * dayFactor,
-            0.15f + 0.56f * dayFactor,
-            0.22f + 0.34f * dayFactor
+            (1.0f - dayFactor) * nightZenith.x + dayFactor * activeZenith.x,
+            (1.0f - dayFactor) * nightZenith.y + dayFactor * activeZenith.y,
+            (1.0f - dayFactor) * nightZenith.z + dayFactor * activeZenith.z
+        };
+
+        // Sky Horizon: Warm turquoise/vellum at noon, burning peach at sunset, pitch sapphire at midnight
+        Vec3f dayHorizon   {0.48f, 0.58f, 0.68f};
+        Vec3f duskHorizon  {0.78f, 0.46f, 0.25f};
+        Vec3f nightHorizon {0.005f, 0.008f, 0.016f};
+        Vec3f activeHorizon = {
+            (1.0f - duskDawnFactor) * dayHorizon.x + duskDawnFactor * duskHorizon.x,
+            (1.0f - duskDawnFactor) * dayHorizon.y + duskDawnFactor * duskHorizon.y,
+            (1.0f - duskDawnFactor) * dayHorizon.z + duskDawnFactor * duskHorizon.z
         };
         cfg.skyHorizon = {
-            0.22f + 0.69f * dayFactor,
-            0.20f + 0.64f * dayFactor,
-            0.28f + 0.40f * dayFactor
+            (1.0f - dayFactor) * nightHorizon.x + dayFactor * activeHorizon.x,
+            (1.0f - dayFactor) * nightHorizon.y + dayFactor * activeHorizon.y,
+            (1.0f - dayFactor) * nightHorizon.z + dayFactor * activeHorizon.z
         };
-        cfg.fogDensity = 0.0038f;
-        cfg.exposure = 0.95f + 0.08f * dayFactor;
+
+        cfg.fogDensity = 0.0030f + 0.0014f * (1.0f - dayFactor);
+        cfg.exposure = 0.88f + 0.08f * dayFactor;
         cfg.inkDensity = 1.0f;
         return cfg;
     }

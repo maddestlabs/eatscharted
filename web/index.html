@@ -1,0 +1,1728 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Eatscharted (WebGPU 2.5D Living Cartography Engine)</title>
+
+    <meta name="application-name" content="Eatscharted">
+    <meta name="apple-mobile-web-app-title" content="Eatscharted">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="theme-color" content="#14100b">
+    <meta name="color-scheme" content="dark">
+    <meta name="description" content="Native C++20 and WebGPU 2.5D Living Cartography action-RPG engine synthesizing Watabou's Perilous Shores procedural maps with Cat Quest tabletop exploration.">
+
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%2318130d' stroke='%23d4af37' stroke-width='2'/%3E%3Cpolygon points='16,4 20,14 16,12 12,14' fill='%23f59e0b'/%3E%3Cpolygon points='16,28 20,18 16,20 12,18' fill='%2394a3b8'/%3E%3Ccircle cx='16' cy='16' r='2.5' fill='%23fef3c7'/%3E%3C/svg%3E">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700;800&family=Outfit:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-touch-callout: none;
+        }
+
+        html, body {
+            width: 100%;
+            height: 100%;
+            background-color: #120e0a;
+            color: #f5ebd6;
+            font-family: 'Outfit', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            overflow: hidden;
+            touch-action: none;
+        }
+
+        #canvas-container {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: radial-gradient(circle at 50% 35%, #261e15 0%, #120e0a 100%);
+            position: relative;
+            overflow: hidden;
+        }
+
+        canvas#canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            outline: none;
+            cursor: crosshair;
+            touch-action: none;
+        }
+
+        /* Loading Screen */
+        #app-loading-screen {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: radial-gradient(circle at center, #241c13 0%, #100c08 100%);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 99999;
+            transition: opacity 0.5s ease-out;
+        }
+
+        #app-loading-screen.fade-out {
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .loader-card {
+            background: rgba(30, 23, 15, 0.90);
+            border: 1px solid rgba(212, 175, 55, 0.32);
+            backdrop-filter: blur(16px);
+            border-radius: 18px;
+            padding: 36px 44px;
+            box-shadow: 0 24px 64px rgba(0, 0, 0, 0.78), inset 0 1px 0 rgba(251, 211, 141, 0.18);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            max-width: 90vw;
+            width: 480px;
+        }
+
+        .realm-title {
+            font-family: 'Cinzel', serif;
+            font-size: 2.15rem;
+            font-weight: 800;
+            letter-spacing: 0.16em;
+            color: #fef3c7;
+            text-shadow: 0 0 24px rgba(245, 158, 11, 0.42);
+            margin-bottom: 4px;
+        }
+
+        .realm-subtitle {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.70rem;
+            letter-spacing: 0.18em;
+            color: #eab308;
+            text-transform: uppercase;
+            margin-bottom: 24px;
+            text-align: center;
+        }
+
+        .progress-bar-track {
+            width: 100%;
+            height: 6px;
+            background: rgba(255, 245, 220, 0.09);
+            border-radius: 999px;
+            overflow: hidden;
+            position: relative;
+            margin-bottom: 16px;
+        }
+
+        .progress-bar-fill {
+            height: 100%;
+            width: 40%;
+            background: linear-gradient(90deg, #b45309, #f59e0b, #fde047);
+            border-radius: 999px;
+            animation: pulse-bar 1.5s ease-in-out infinite alternate;
+        }
+
+        @keyframes pulse-bar {
+            0% { width: 25%; transform: translateX(0%); }
+            100% { width: 75%; transform: translateX(33%); }
+        }
+
+        .status-text {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.72rem;
+            letter-spacing: 0.08em;
+            color: #d6c7b2;
+            text-align: center;
+        }
+
+        .status-text.error {
+            color: #f87171 !important;
+        }
+
+        /* Top Bar System */
+        .top-bar {
+            position: absolute;
+            top: calc(12px + env(safe-area-inset-top, 0px));
+            left: calc(14px + env(safe-area-inset-left, 0px));
+            right: calc(14px + env(safe-area-inset-right, 0px));
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            z-index: 100;
+            pointer-events: none;
+            gap: 8px;
+        }
+
+        .top-bar > * {
+            pointer-events: auto;
+        }
+
+        .webgpu-badge {
+            background: rgba(26, 20, 14, 0.86);
+            border: 1px solid rgba(212, 175, 55, 0.28);
+            backdrop-filter: blur(12px);
+            border-radius: 999px;
+            padding: 6px 13px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.73rem;
+            color: #f5ebd6;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+            white-space: nowrap;
+        }
+
+        .badge-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background-color: #10b981;
+            box-shadow: 0 0 8px #10b981;
+            flex-shrink: 0;
+        }
+
+        .time-controller {
+            background: rgba(26, 20, 14, 0.88);
+            border: 1px solid rgba(212, 175, 55, 0.30);
+            backdrop-filter: blur(14px);
+            border-radius: 999px;
+            padding: 5px 13px;
+            display: flex;
+            align-items: center;
+            gap: 9px;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+        }
+
+        .time-icon {
+            font-size: 0.95rem;
+            line-height: 1;
+        }
+
+        .time-slider {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 104px;
+            height: 5px;
+            background: linear-gradient(90deg, #1e1b4b 0%, #f59e0b 26%, #38bdf8 50%, #ea580c 75%, #1e1b4b 100%);
+            border-radius: 999px;
+            outline: none;
+            cursor: pointer;
+        }
+
+        .time-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 14px;
+            height: 14px;
+            border-radius: 50%;
+            background: #fef3c7;
+            border: 2px solid #d97706;
+            box-shadow: 0 0 10px rgba(245, 158, 11, 0.7);
+            cursor: pointer;
+        }
+
+        .time-badge {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.71rem;
+            font-weight: 600;
+            color: #fef3c7;
+            min-width: 92px;
+            text-align: center;
+            letter-spacing: 0.03em;
+        }
+
+        .time-play-btn {
+            background: rgba(255, 245, 220, 0.08);
+            border: 1px solid rgba(212, 175, 55, 0.25);
+            border-radius: 999px;
+            padding: 3px 10px;
+            font-family: 'Outfit', sans-serif;
+            font-size: 0.70rem;
+            font-weight: 600;
+            color: #e2d5be;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            outline: none;
+            white-space: nowrap;
+        }
+
+        .time-play-btn:hover {
+            background: rgba(212, 175, 55, 0.18);
+            color: #fef3c7;
+        }
+
+        .time-play-btn.active {
+            background: rgba(217, 119, 6, 0.32);
+            border-color: rgba(245, 158, 11, 0.65);
+            color: #fde68a;
+            box-shadow: 0 0 10px rgba(245, 158, 11, 0.35);
+        }
+
+        /* Scene Switcher Pill & Carousel Trigger */
+        .scene-nav-cluster {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            background: rgba(26, 20, 14, 0.88);
+            border: 1px solid rgba(212, 175, 55, 0.30);
+            backdrop-filter: blur(14px);
+            border-radius: 999px;
+            padding: 3px 4px;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+        }
+
+        .scene-step-btn {
+            background: transparent;
+            border: none;
+            color: #cbb89d;
+            font-size: 1rem;
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            outline: none;
+        }
+
+        .scene-step-btn:hover, .scene-step-btn:active {
+            color: #fde047;
+            background: rgba(212, 175, 55, 0.15);
+        }
+
+        .scene-active-pill {
+            background: rgba(180, 83, 9, 0.28);
+            border: 1px solid rgba(245, 158, 11, 0.50);
+            border-radius: 999px;
+            padding: 5px 12px;
+            font-family: 'Outfit', sans-serif;
+            font-size: 0.78rem;
+            font-weight: 600;
+            color: #fef3c7;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            transition: all 0.2s ease;
+            outline: none;
+            white-space: nowrap;
+        }
+
+        .scene-active-pill:hover, .scene-active-pill:active {
+            background: rgba(217, 119, 6, 0.42);
+            border-color: rgba(251, 191, 36, 0.8);
+            box-shadow: 0 0 16px rgba(245, 158, 11, 0.35);
+        }
+
+        .scene-active-pill .pill-caret {
+            font-size: 0.70rem;
+            color: #d6c7b2;
+        }
+
+        /* Diegetic Cartographic Region & Hero Status Ribbon */
+        .chart-hud-ribbon {
+            position: absolute;
+            top: calc(56px + env(safe-area-inset-top, 0px));
+            left: 50%;
+            transform: translateX(-50%);
+            width: min(740px, calc(100vw - 24px));
+            background: linear-gradient(180deg, rgba(32, 24, 16, 0.88) 0%, rgba(22, 17, 11, 0.92) 100%);
+            border: 1.5px solid rgba(212, 175, 55, 0.55);
+            border-radius: 12px;
+            padding: 7px 14px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            z-index: 80;
+            pointer-events: none;
+            backdrop-filter: blur(10px);
+            box-shadow: 0 10px 28px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(254, 243, 199, 0.15);
+        }
+
+        .ribbon-region {
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+        }
+
+        .ribbon-region-title-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .ribbon-region-name {
+            font-family: 'Cinzel', serif;
+            font-size: 0.92rem;
+            font-weight: 700;
+            letter-spacing: 0.06em;
+            color: #fef3c7;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .ribbon-mode-tag {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.62rem;
+            font-weight: 600;
+            padding: 1px 6px;
+            border-radius: 999px;
+            background: rgba(14, 165, 233, 0.25);
+            border: 1px solid rgba(56, 189, 248, 0.6);
+            color: #7dd3fc;
+            white-space: nowrap;
+            display: none;
+        }
+
+        .ribbon-mode-tag.sailing {
+            display: inline-flex;
+            background: rgba(14, 165, 233, 0.25);
+            border-color: rgba(56, 189, 248, 0.6);
+            color: #7dd3fc;
+        }
+
+        .ribbon-mode-tag.dungeon {
+            display: inline-flex;
+            background: rgba(168, 85, 247, 0.28);
+            border-color: rgba(192, 132, 252, 0.65);
+            color: #e9d5ff;
+        }
+
+        .ribbon-region-sub {
+            font-size: 0.70rem;
+            color: #cbb89d;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .ribbon-stats {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-shrink: 0;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.72rem;
+        }
+
+        .stat-pill {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            color: #fde68a;
+            font-weight: 600;
+        }
+
+        .hp-bar-wrap {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .hp-bar-track {
+            width: 68px;
+            height: 7px;
+            background: rgba(0, 0, 0, 0.55);
+            border: 1px solid rgba(248, 113, 113, 0.45);
+            border-radius: 999px;
+            overflow: hidden;
+        }
+
+        .hp-bar-fill {
+            height: 100%;
+            width: 100%;
+            background: linear-gradient(90deg, #dc2626, #f87171);
+            border-radius: 999px;
+            transition: width 0.2s ease;
+        }
+
+        .hp-text {
+            color: #fca5a5;
+            font-size: 0.70rem;
+            font-weight: 600;
+        }
+
+        /* Scene Drawer / Sheet */
+        .scene-drawer-backdrop {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(12, 9, 6, 0.68);
+            backdrop-filter: blur(8px);
+            z-index: 999;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.25s ease;
+        }
+
+        .scene-drawer-backdrop.open {
+            opacity: 1;
+            pointer-events: auto;
+        }
+
+        .scene-drawer {
+            position: absolute;
+            bottom: 0;
+            left: 50%;
+            transform: translateX(-50%) translateY(100%);
+            width: 100%;
+            max-width: 680px;
+            background: rgba(26, 20, 14, 0.96);
+            border: 1px solid rgba(212, 175, 55, 0.32);
+            border-bottom: none;
+            border-radius: 24px 24px 0 0;
+            padding: 24px 24px calc(24px + env(safe-area-inset-bottom, 0px));
+            box-shadow: 0 -20px 60px rgba(0, 0, 0, 0.85), inset 0 1px 0 rgba(254, 243, 199, 0.18);
+            backdrop-filter: blur(24px);
+            transition: transform 0.32s cubic-bezier(0.16, 1, 0.3, 1);
+            z-index: 1000;
+        }
+
+        .scene-drawer-backdrop.open .scene-drawer {
+            transform: translateX(-50%) translateY(0);
+        }
+
+        .drawer-handle {
+            width: 44px;
+            height: 4px;
+            background: rgba(212, 175, 55, 0.35);
+            border-radius: 999px;
+            margin: -10px auto 18px;
+        }
+
+        .drawer-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 18px;
+        }
+
+        .drawer-title {
+            font-family: 'Cinzel', serif;
+            font-size: 1.2rem;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            color: #fef3c7;
+        }
+
+        .drawer-close-btn {
+            background: rgba(255, 245, 220, 0.08);
+            border: 1px solid rgba(212, 175, 55, 0.25);
+            color: #e2d5be;
+            font-size: 0.95rem;
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            outline: none;
+        }
+
+        .scene-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(270px, 1fr));
+            gap: 12px;
+            max-height: 55vh;
+            overflow-y: auto;
+            padding-right: 4px;
+        }
+
+        .scene-card {
+            background: rgba(255, 248, 231, 0.04);
+            border: 1px solid rgba(212, 175, 55, 0.16);
+            border-radius: 14px;
+            padding: 14px 16px;
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            cursor: pointer;
+            transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+            outline: none;
+            text-align: left;
+        }
+
+        .scene-card:hover {
+            background: rgba(212, 175, 55, 0.10);
+            border-color: rgba(212, 175, 55, 0.38);
+            transform: translateY(-2px);
+        }
+
+        .scene-card.active {
+            background: rgba(180, 83, 9, 0.24);
+            border-color: rgba(245, 158, 11, 0.72);
+            box-shadow: 0 0 20px rgba(245, 158, 11, 0.22), inset 0 0 12px rgba(245, 158, 11, 0.12);
+        }
+
+        .scene-card-icon {
+            font-size: 1.6rem;
+            width: 42px;
+            height: 42px;
+            background: rgba(255, 248, 231, 0.06);
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            border: 1px solid rgba(212, 175, 55, 0.18);
+        }
+
+        .scene-card.active .scene-card-icon {
+            background: rgba(217, 119, 6, 0.32);
+            border-color: rgba(245, 158, 11, 0.65);
+        }
+
+        .scene-card-body {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .scene-card-name {
+            font-size: 0.92rem;
+            font-weight: 600;
+            color: #fef3c7;
+            margin-bottom: 2px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .scene-card.active .scene-card-name {
+            color: #fde047;
+        }
+
+        .scene-card-tag {
+            font-size: 0.72rem;
+            color: #cbb89d;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .scene-card-key {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.65rem;
+            background: rgba(212, 175, 55, 0.14);
+            border: 1px solid rgba(212, 175, 55, 0.28);
+            border-radius: 4px;
+            padding: 1px 6px;
+            color: #fde68a;
+        }
+
+        /* Mobile Touch Controls Layer */
+        #touch-controls-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 50;
+            pointer-events: none;
+            touch-action: none;
+            transition: opacity 0.25s ease;
+        }
+
+        #touch-controls-layer.hidden {
+            display: none;
+        }
+
+        /* Touch Zones */
+        .touch-zone {
+            position: absolute;
+            top: 96px;
+            bottom: 0;
+            pointer-events: auto;
+            touch-action: none;
+        }
+
+        #touch-stick-zone {
+            left: 0;
+            width: 55%;
+        }
+
+        #touch-look-zone {
+            right: 0;
+            width: 45%;
+        }
+
+        /* Dynamic Floating Brass Compass Joystick */
+        #joystick-base {
+            position: absolute;
+            width: 124px;
+            height: 124px;
+            border-radius: 50%;
+            background: radial-gradient(circle, rgba(217, 119, 6, 0.20) 0%, rgba(24, 18, 12, 0.72) 85%);
+            border: 2px solid rgba(245, 158, 11, 0.55);
+            box-shadow: 0 0 24px rgba(245, 158, 11, 0.32), inset 0 0 16px rgba(245, 158, 11, 0.18);
+            backdrop-filter: blur(8px);
+            pointer-events: none;
+            opacity: 0;
+            transform: translate(-50%, -50%) scale(0.85);
+            transition: opacity 0.18s ease, transform 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        #joystick-base.active {
+            opacity: 1;
+            transform: translate(-50%, -50%) scale(1);
+        }
+
+        #joystick-puck {
+            width: 48px;
+            height: 48px;
+            border-radius: 50%;
+            background: radial-gradient(circle at 35% 35%, #fcd34d 0%, #b45309 100%);
+            border: 2px solid rgba(254, 243, 199, 0.92);
+            box-shadow: 0 0 16px rgba(245, 158, 11, 0.85);
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+            transition: transform 0.04s linear;
+        }
+
+        .joystick-tick {
+            position: absolute;
+            background: rgba(254, 243, 199, 0.32);
+        }
+        .joystick-tick.vert { width: 2px; height: 12px; }
+        .joystick-tick.horiz { height: 2px; width: 12px; }
+        .joystick-tick.n { top: 6px; }
+        .joystick-tick.s { bottom: 6px; }
+        .joystick-tick.w { left: 6px; }
+        .joystick-tick.e { right: 6px; }
+
+        /* Floating Action Buttons Cluster (Right Thumb Cat Quest Action-RPG Ergonomics) */
+        .touch-actions-cluster {
+            position: absolute;
+            right: calc(18px + env(safe-area-inset-right, 0px));
+            bottom: calc(22px + env(safe-area-inset-bottom, 0px));
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            gap: 11px;
+            pointer-events: auto;
+            z-index: 60;
+        }
+
+        .touch-action-row {
+            display: flex;
+            align-items: center;
+            gap: 11px;
+        }
+
+        .touch-action-btn {
+            width: 52px;
+            height: 52px;
+            border-radius: 50%;
+            background: rgba(26, 20, 14, 0.86);
+            border: 1.5px solid rgba(212, 175, 55, 0.36);
+            backdrop-filter: blur(14px);
+            color: #fef3c7;
+            font-size: 1.25rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(254, 243, 199, 0.16);
+            cursor: pointer;
+            outline: none;
+            transition: all 0.14s ease;
+            touch-action: none;
+            position: relative;
+        }
+
+        /* Primary Cat Quest Sword Slash Button */
+        .touch-action-btn.primary-slash {
+            width: 64px;
+            height: 64px;
+            font-size: 1.55rem;
+            background: radial-gradient(circle at 35% 30%, rgba(217, 119, 6, 0.52), rgba(38, 24, 14, 0.92));
+            border: 2px solid rgba(251, 191, 36, 0.78);
+            box-shadow: 0 10px 28px rgba(0, 0, 0, 0.65), 0 0 18px rgba(245, 158, 11, 0.28);
+        }
+
+        /* Arcane Nova Spell Button */
+        .touch-action-btn.arcane-spell {
+            border-color: rgba(56, 189, 248, 0.52);
+            background: radial-gradient(circle at 35% 30%, rgba(14, 165, 233, 0.32), rgba(22, 24, 34, 0.90));
+        }
+
+        .touch-action-btn:active, .touch-action-btn.active {
+            background: rgba(217, 119, 6, 0.55);
+            border-color: #fde047;
+            box-shadow: 0 0 22px rgba(245, 158, 11, 0.7);
+            transform: scale(0.91);
+            color: #ffffff;
+        }
+
+        .touch-action-btn.arcane-spell:active {
+            background: rgba(14, 165, 233, 0.55);
+            border-color: #7dd3fc;
+            box-shadow: 0 0 22px rgba(56, 189, 248, 0.75);
+        }
+
+        .touch-action-sub {
+            position: absolute;
+            bottom: -4px;
+            padding: 1px 5px;
+            border-radius: 4px;
+            background: rgba(18, 14, 10, 0.92);
+            border: 1px solid rgba(212, 175, 55, 0.35);
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.54rem;
+            font-weight: 600;
+            color: #fde68a;
+            letter-spacing: 0.02em;
+            pointer-events: none;
+            white-space: nowrap;
+        }
+
+        /* Touch Mode Toggle Pill */
+        .touch-mode-pill {
+            position: absolute;
+            bottom: calc(18px + env(safe-area-inset-bottom, 0px));
+            left: calc(18px + env(safe-area-inset-left, 0px));
+            background: rgba(26, 20, 14, 0.85);
+            border: 1px solid rgba(212, 175, 55, 0.28);
+            backdrop-filter: blur(12px);
+            border-radius: 999px;
+            padding: 5px 12px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.70rem;
+            color: #e2d5be;
+            cursor: pointer;
+            outline: none;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+            pointer-events: auto;
+            z-index: 60;
+            transition: all 0.2s ease;
+        }
+
+        .touch-mode-pill:hover, .touch-mode-pill:active {
+            color: #fef3c7;
+            border-color: rgba(245, 158, 11, 0.6);
+            background: rgba(180, 83, 9, 0.28);
+        }
+
+        .touch-mode-pill.active {
+            color: #fde047;
+            border-color: rgba(250, 204, 21, 0.6);
+        }
+
+        /* Desktop Controls HUD */
+        .controls-hud {
+            position: absolute;
+            bottom: 16px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(24, 18, 12, 0.85);
+            border: 1px solid rgba(212, 175, 55, 0.24);
+            backdrop-filter: blur(12px);
+            border-radius: 12px;
+            padding: 8px 18px;
+            display: flex;
+            gap: 15px;
+            z-index: 40;
+            font-size: 0.72rem;
+            color: #e2d5be;
+            pointer-events: none;
+            box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
+            flex-wrap: wrap;
+            justify-content: center;
+            transition: opacity 0.3s ease;
+            white-space: nowrap;
+        }
+
+        .hud-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .hud-key {
+            background: rgba(212, 175, 55, 0.15);
+            border: 1px solid rgba(212, 175, 55, 0.32);
+            border-radius: 4px;
+            padding: 2px 6px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.67rem;
+            color: #fef3c7;
+            font-weight: 600;
+        }
+
+        /* Responsive Media Queries for Mobile (iPhone 17 Pro Max Portrait & Landscape) */
+        @media (max-width: 860px) {
+            .top-bar {
+                top: calc(8px + env(safe-area-inset-top, 0px));
+                left: calc(10px + env(safe-area-inset-left, 0px));
+                right: calc(10px + env(safe-area-inset-right, 0px));
+            }
+
+            .webgpu-badge span {
+                display: none;
+            }
+            .webgpu-badge {
+                padding: 6px 8px;
+            }
+
+            .time-slider {
+                width: 72px;
+            }
+            .time-badge {
+                min-width: 74px;
+                font-size: 0.67rem;
+            }
+
+            .chart-hud-ribbon {
+                top: calc(48px + env(safe-area-inset-top, 0px));
+                padding: 6px 12px;
+            }
+
+            .controls-hud {
+                display: none;
+            }
+        }
+
+        body.is-mobile #touch-toggle-pill {
+            display: none !important;
+        }
+
+        @media (hover: none) and (pointer: coarse) {
+            #touch-toggle-pill {
+                display: none !important;
+            }
+        }
+
+        @media (max-width: 560px) {
+            .time-slider {
+                display: none;
+            }
+            .time-controller {
+                padding: 4px 10px;
+                gap: 6px;
+            }
+            .scene-active-pill {
+                padding: 4px 10px;
+                font-size: 0.74rem;
+            }
+            .ribbon-region-sub {
+                display: none;
+            }
+            .chart-hud-ribbon {
+                padding: 5px 10px;
+            }
+            .hp-bar-track {
+                width: 48px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="canvas-container">
+        <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
+
+        <!-- Loading Screen -->
+        <div id="app-loading-screen">
+            <div class="loader-card">
+                <div class="realm-title">EATSCHARTED</div>
+                <div class="realm-subtitle">2.5D Living Cartography &amp; Tabletop Action-RPG</div>
+                <div class="progress-bar-track">
+                    <div class="progress-bar-fill"></div>
+                </div>
+                <div class="status-text" id="status-text">INKING VORONOI ATLAS &amp; WEBGPU PIPELINE...</div>
+            </div>
+        </div>
+
+        <!-- Top Navigation Bar -->
+        <header class="top-bar">
+            <div class="webgpu-badge" id="gpu-badge">
+                <div class="badge-dot"></div>
+                <span>WebGPU Active</span>
+            </div>
+
+            <div class="time-controller" id="time-controller">
+                <span class="time-icon" id="time-icon">☀️</span>
+                <input type="range" class="time-slider" id="time-slider" min="0" max="1" step="0.002" value="0.36" title="Drag to adjust Sun/Moon Watch (24h)">
+                <span class="time-badge" id="time-badge">08:38 [Morning]</span>
+                <button class="time-play-btn active" id="time-play-btn" onclick="toggleTimeProgression()">⏸ Auto</button>
+            </div>
+
+            <!-- Unified Chart Selector Pill -->
+            <div class="scene-nav-cluster">
+                <button class="scene-step-btn" id="btn-scene-prev" onclick="cycleScene(-1)" title="Previous Chart">‹</button>
+                <button class="scene-active-pill" id="scene-active-trigger" onclick="toggleSceneDrawer(true)">
+                    <span id="scene-pill-icon">🧭</span>
+                    <span id="scene-pill-name">Perilous Shores</span>
+                    <span class="pill-caret">▾</span>
+                </button>
+                <button class="scene-step-btn" id="btn-scene-next" onclick="cycleScene(1)" title="Next Chart">›</button>
+            </div>
+        </header>
+
+        <!-- Live Cartographic Region & Cat Quest Hero Status Ribbon -->
+        <div class="chart-hud-ribbon" id="chart-hud-ribbon">
+            <div class="ribbon-region">
+                <div class="ribbon-region-title-row">
+                    <span class="ribbon-region-name" id="hud-region-name">PORT PAWVEN</span>
+                    <span class="ribbon-mode-tag" id="hud-mode-tag">⛵ SAILING</span>
+                </div>
+                <div class="ribbon-region-sub" id="hud-region-sub">Royal Cartographer's Harbor</div>
+            </div>
+            <div class="ribbon-stats">
+                <span class="stat-pill" id="hud-level">LV.1</span>
+                <div class="hp-bar-wrap">
+                    <div class="hp-bar-track">
+                        <div class="hp-bar-fill" id="hud-hp-fill"></div>
+                    </div>
+                    <span class="hp-text" id="hud-hp-text">120/120</span>
+                </div>
+                <span class="stat-pill" id="hud-gold">🪙 50</span>
+                <span class="stat-pill" id="hud-charted">📜 9</span>
+            </div>
+        </div>
+
+        <!-- Slide-Up Chart Switcher Drawer (Mobile & Tablet) -->
+        <div class="scene-drawer-backdrop" id="scene-drawer-backdrop" onclick="onDrawerBackdropClick(event)">
+            <div class="scene-drawer" id="scene-drawer">
+                <div class="drawer-handle"></div>
+                <div class="drawer-header">
+                    <div class="drawer-title">Select Living Cartography Chart</div>
+                    <button class="drawer-close-btn" onclick="toggleSceneDrawer(false)" title="Close">✕</button>
+                </div>
+                <div class="scene-grid" id="scene-grid">
+                    <!-- Populated dynamically via SCENES array -->
+                </div>
+            </div>
+        </div>
+
+        <!-- Mobile Touch Controls Layer -->
+        <div id="touch-controls-layer">
+            <!-- Invisible Touch Input Zones -->
+            <div id="touch-stick-zone" class="touch-zone"></div>
+            <div id="touch-look-zone" class="touch-zone"></div>
+
+            <!-- Dynamic Floating Brass Compass Joystick -->
+            <div id="joystick-base">
+                <div class="joystick-tick vert n"></div>
+                <div class="joystick-tick vert s"></div>
+                <div class="joystick-tick horiz w"></div>
+                <div class="joystick-tick horiz e"></div>
+                <div id="joystick-puck"></div>
+            </div>
+
+            <!-- Cat Quest Tabletop & Cartographer Action Cluster (Right Thumb) -->
+            <div class="touch-actions-cluster">
+                <div class="touch-action-row">
+                    <button class="touch-action-btn" id="btn-touch-atlas" title="Toggle Atlas Map View (M)">
+                        <span>🗺️</span>
+                        <span class="touch-action-sub">ATLAS</span>
+                    </button>
+                    <button class="touch-action-btn" id="btn-touch-dungeon" title="Enter / Exit Dungeon Portal (E)">
+                        <span>🚪</span>
+                        <span class="touch-action-sub">PORTAL</span>
+                    </button>
+                </div>
+                <div class="touch-action-row">
+                    <button class="touch-action-btn" id="btn-touch-dodge" title="Dodge-Roll / Caravel Sprint (Shift)">
+                        <span>💨</span>
+                        <span class="touch-action-sub">DODGE</span>
+                    </button>
+                    <button class="touch-action-btn arcane-spell" id="btn-touch-spell" title="Cast Arcane Nova AoE (K)">
+                        <span>✨</span>
+                        <span class="touch-action-sub">NOVA</span>
+                    </button>
+                    <button class="touch-action-btn primary-slash" id="btn-touch-slash" title="Melee Sword Slash (Space)">
+                        <span>⚔️</span>
+                        <span class="touch-action-sub">SLASH</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Touch Controls Visibility Toggle Pill -->
+        <button class="touch-mode-pill" id="touch-toggle-pill" onclick="toggleTouchControls()" title="Toggle Virtual Touch Controls">
+            <span>🎮</span>
+            <span id="touch-toggle-text">Touch Controls</span>
+        </button>
+
+        <!-- Desktop Controls HUD -->
+        <div class="controls-hud" id="desktop-controls-hud">
+            <div class="hud-item"><span class="hud-key">W A S D</span> Move / Sail</div>
+            <div class="hud-item"><span class="hud-key">Shift</span> Dodge / Sprint</div>
+            <div class="hud-item"><span class="hud-key">Space / Click</span> Sword Slash</div>
+            <div class="hud-item"><span class="hud-key">K / R-Click</span> Arcane Nova</div>
+            <div class="hud-item"><span class="hud-key">E</span> Dungeon Portal</div>
+            <div class="hud-item"><span class="hud-key">M / Scroll</span> Atlas Zoom</div>
+            <div class="hud-item"><span class="hud-key">1 - 4</span> Switch Chart</div>
+        </div>
+    </div>
+
+    <script type="text/javascript">
+        // -------------------------------------------------------------
+        // LIVING CARTOGRAPHY CHART CATALOG
+        // -------------------------------------------------------------
+        const SCENES = [
+            { id: 'scenes/perilous_shores.eats', name: 'Perilous Shores', tag: 'Peninsula, Bay & Barrier Islands', icon: '🧭', key: '1' },
+            { id: 'scenes/shattered_isles.eats', name: 'Shattered Isles', tag: 'Nautical Archipelago & Caravel Sailing', icon: '⛵', key: '2' },
+            { id: 'scenes/highland_kingdom.eats', name: 'Highland Kingdom', tag: 'Silvervale Twin-Ridge River Valley', icon: '🏔️', key: '3' },
+            { id: 'scenes/sunken_sanctum_dungeon.eats', name: 'Sunken Sanctum', tag: 'Cross-Hatched Watabou One-Page Dungeon', icon: '🗝️', key: '4' }
+        ];
+
+        let currentSceneIndex = 0;
+
+        // -------------------------------------------------------------
+        // CANVAS & INITIAL SETUP
+        // -------------------------------------------------------------
+        const canvasElem = document.getElementById('canvas');
+        const statusText = document.getElementById('status-text');
+        const badge = document.getElementById('gpu-badge');
+
+        window.hideAppLoadingScreen = function() {
+            const loader = document.getElementById('app-loading-screen');
+            if (loader && !loader.classList.contains('fade-out')) {
+                loader.classList.add('fade-out');
+                setTimeout(function() {
+                    if (loader.parentNode) {
+                        loader.parentNode.removeChild(loader);
+                    }
+                }, 500);
+            }
+        };
+
+        // -------------------------------------------------------------
+        // CHART SELECTION & DRAWER LOGIC
+        // -------------------------------------------------------------
+        function buildSceneGrid() {
+            const grid = document.getElementById('scene-grid');
+            if (!grid) return;
+            grid.innerHTML = '';
+            SCENES.forEach(function(sc, idx) {
+                const card = document.createElement('button');
+                card.className = 'scene-card' + (idx === currentSceneIndex ? ' active' : '');
+                card.id = 'scene-card-' + idx;
+                card.onclick = function() {
+                    switchSceneByIndex(idx);
+                    toggleSceneDrawer(false);
+                };
+                card.innerHTML = `
+                    <div class="scene-card-icon">${sc.icon}</div>
+                    <div class="scene-card-body">
+                        <div class="scene-card-name">
+                            <span>${sc.name}</span>
+                            <span class="scene-card-key">${sc.key}</span>
+                        </div>
+                        <div class="scene-card-tag">${sc.tag}</div>
+                    </div>
+                `;
+                grid.appendChild(card);
+            });
+        }
+
+        function updateScenePill(idx) {
+            currentSceneIndex = idx;
+            const sc = SCENES[idx];
+            if (!sc) return;
+            const iconElem = document.getElementById('scene-pill-icon');
+            const nameElem = document.getElementById('scene-pill-name');
+            if (iconElem) iconElem.innerText = sc.icon;
+            if (nameElem) nameElem.innerText = sc.name;
+
+            document.querySelectorAll('.scene-card').forEach(function(card, cIdx) {
+                if (cIdx === idx) {
+                    card.classList.add('active');
+                } else {
+                    card.classList.remove('active');
+                }
+            });
+        }
+
+        window.toggleSceneDrawer = function(open) {
+            const backdrop = document.getElementById('scene-drawer-backdrop');
+            if (!backdrop) return;
+            if (open) {
+                backdrop.classList.add('open');
+            } else {
+                backdrop.classList.remove('open');
+            }
+        };
+
+        window.onDrawerBackdropClick = function(evt) {
+            if (evt.target && evt.target.id === 'scene-drawer-backdrop') {
+                toggleSceneDrawer(false);
+            }
+        };
+
+        window.switchSceneByIndex = function(idx) {
+            if (idx < 0) idx = SCENES.length - 1;
+            if (idx >= SCENES.length) idx = 0;
+            const sc = SCENES[idx];
+            if (!sc) return;
+
+            if (typeof Module !== 'undefined' && Module.ccall) {
+                try {
+                    const ok = Module.ccall('eatscharted_load_scene', 'number', ['string'], [sc.id]);
+                    if (ok) {
+                        updateScenePill(idx);
+                    }
+                } catch (e) {
+                    console.error('[Eatscharted] Failed to switch chart:', e);
+                }
+            } else {
+                updateScenePill(idx);
+            }
+        };
+
+        window.cycleScene = function(delta) {
+            switchSceneByIndex(currentSceneIndex + delta);
+        };
+
+        window.onSceneLoaded = function(scenePath) {
+            const foundIdx = SCENES.findIndex(s => s.id === scenePath || scenePath.indexOf(s.id) !== -1);
+            if (foundIdx !== -1) {
+                updateScenePill(foundIdx);
+            }
+        };
+
+        // -------------------------------------------------------------
+        // TIME OF DAY & HERO HUD TELEMETRY
+        // -------------------------------------------------------------
+        function getTimePeriod(t) {
+            let frac = t - Math.floor(t);
+            if (frac < 0) frac += 1;
+            if (frac < 0.20) return { name: "Night", icon: "🌙" };
+            if (frac < 0.26) return { name: "Dawn", icon: "🌅" };
+            if (frac < 0.34) return { name: "Sunrise", icon: "🌄" };
+            if (frac < 0.46) return { name: "Morning", icon: "☀️" };
+            if (frac < 0.62) return { name: "Noon", icon: "☀️" };
+            if (frac < 0.76) return { name: "Golden Hour", icon: "🌇" };
+            if (frac < 0.84) return { name: "Sunset", icon: "🌆" };
+            if (frac < 0.92) return { name: "Dusk", icon: "🌌" };
+            return { name: "Night", icon: "🌙" };
+        }
+
+        window.updateTimeUI = function(t) {
+            let frac = t - Math.floor(t);
+            if (frac < 0) frac += 1;
+            const hours = Math.floor(frac * 24);
+            const mins = Math.floor((frac * 24 - hours) * 60);
+            const period = getTimePeriod(frac);
+            const hStr = (hours < 10 ? '0' : '') + hours;
+            const mStr = (mins < 10 ? '0' : '') + mins;
+            const tBadge = document.getElementById('time-badge');
+            if (tBadge) tBadge.innerText = hStr + ':' + mStr + ' [' + period.name + ']';
+            const icon = document.getElementById('time-icon');
+            if (icon) icon.innerText = period.icon;
+            const slider = document.getElementById('time-slider');
+            if (slider && Math.abs(parseFloat(slider.value) - frac) > 0.003 && document.activeElement !== slider) {
+                slider.value = frac;
+            }
+        };
+
+        window.toggleTimeProgression = function() {
+            const btn = document.getElementById('time-play-btn');
+            if (typeof Module !== 'undefined' && Module.ccall) {
+                try {
+                    const playing = Module.ccall('eatscharted_toggle_time_progression', 'number', [], []);
+                    if (btn) {
+                        if (playing) {
+                            btn.classList.add('active');
+                            btn.innerText = '⏸ Auto';
+                        } else {
+                            btn.classList.remove('active');
+                            btn.innerText = '▶ Auto';
+                        }
+                    }
+                } catch (e) {}
+            }
+        };
+
+        const timeSlider = document.getElementById('time-slider');
+        if (timeSlider) {
+            timeSlider.addEventListener('input', function(e) {
+                const val = parseFloat(e.target.value);
+                if (typeof Module !== 'undefined' && Module.ccall) {
+                    try {
+                        Module.ccall('eatscharted_set_time_of_day', null, ['number'], [val]);
+                    } catch (err) {}
+                }
+                updateTimeUI(val);
+            });
+        }
+
+        function pollHudTelemetry() {
+            if (typeof Module === 'undefined' || !Module.ccall) return;
+            try {
+                const curT = Module.ccall('eatscharted_get_time_of_day', 'number', [], []);
+                updateTimeUI(curT);
+
+                const hp = Module.ccall('eatscharted_get_hero_hp', 'number', [], []);
+                const maxHp = Math.max(1, Module.ccall('eatscharted_get_hero_max_hp', 'number', [], []));
+                const lv = Module.ccall('eatscharted_get_hero_level', 'number', [], []);
+                const gold = Module.ccall('eatscharted_get_hero_gold', 'number', [], []);
+                const charted = Module.ccall('eatscharted_get_charted_chunks', 'number', [], []);
+                const sailing = Module.ccall('eatscharted_is_sailing', 'number', [], []);
+                const dungeon = Module.ccall('eatscharted_is_dungeon_mode', 'number', [], []);
+                const regName = Module.ccall('eatscharted_get_region_name', 'string', [], []);
+                const regSub = Module.ccall('eatscharted_get_region_sub', 'string', [], []);
+
+                const elName = document.getElementById('hud-region-name');
+                if (elName && regName) elName.innerText = regName;
+
+                const elSub = document.getElementById('hud-region-sub');
+                if (elSub && regSub) elSub.innerText = regSub;
+
+                const elMode = document.getElementById('hud-mode-tag');
+                if (elMode) {
+                    if (dungeon) {
+                        elMode.className = 'ribbon-mode-tag dungeon';
+                        elMode.innerText = '🗝️ DUNGEON';
+                    } else if (sailing) {
+                        elMode.className = 'ribbon-mode-tag sailing';
+                        elMode.innerText = '⛵ SAILING';
+                    } else {
+                        elMode.className = 'ribbon-mode-tag';
+                    }
+                }
+
+                const elLv = document.getElementById('hud-level');
+                if (elLv) elLv.innerText = 'LV.' + lv;
+
+                const elHpFill = document.getElementById('hud-hp-fill');
+                if (elHpFill) elHpFill.style.width = Math.min(100, Math.max(0, (hp / maxHp) * 100)).toFixed(1) + '%';
+
+                const elHpText = document.getElementById('hud-hp-text');
+                if (elHpText) elHpText.innerText = hp + '/' + maxHp;
+
+                const elGold = document.getElementById('hud-gold');
+                if (elGold) elGold.innerText = '🪙 ' + gold;
+
+                const elCharted = document.getElementById('hud-charted');
+                if (elCharted) elCharted.innerText = '📜 ' + charted;
+            } catch (e) {}
+        }
+
+        setInterval(pollHudTelemetry, 140);
+
+        // -------------------------------------------------------------
+        // AUDIO UNLOCK (iOS WebKit / Chrome Mobile Gesture Resume)
+        // -------------------------------------------------------------
+        function unlockAudio() {
+            if (window.miniaudio) {
+                const devs = window.miniaudio.devices || window.miniaudio.device_instances || [];
+                for (let k in devs) {
+                    const dev = devs[k];
+                    if (!dev) continue;
+                    const ctx = dev.webaudio || dev.audioContext;
+                    if (ctx && typeof ctx.resume === 'function' && ctx.state === 'suspended') {
+                        ctx.resume().catch(function() {});
+                    }
+                }
+            }
+            if (window.audioContext && window.audioContext.state === 'suspended') {
+                window.audioContext.resume().catch(function() {});
+            }
+        }
+
+        ['click', 'pointerdown', 'keydown', 'touchstart'].forEach(function(evt) {
+            window.addEventListener(evt, unlockAudio, { passive: true, capture: true });
+        });
+
+        // -------------------------------------------------------------
+        // MOBILE TOUCH ENGINE (COMPASS JOYSTICK, ATLAS PINCH, RPG BUTTONS)
+        // -------------------------------------------------------------
+        const touchState = {
+            moveX: 0.0,
+            moveZ: 0.0,
+            dodge: false,
+
+            stickTouchId: null,
+            stickStartX: 0,
+            stickStartY: 0,
+            maxRadius: 48,
+
+            lookTouchId: null,
+            lastLookY: 0,
+
+            enabled: false
+        };
+
+        const joystickBase = document.getElementById('joystick-base');
+        const joystickPuck = document.getElementById('joystick-puck');
+        const touchStickZone = document.getElementById('touch-stick-zone');
+        const touchLookZone = document.getElementById('touch-look-zone');
+        const touchTogglePill = document.getElementById('touch-toggle-pill');
+        const touchLayer = document.getElementById('touch-controls-layer');
+        const desktopHud = document.getElementById('desktop-controls-hud');
+
+        function sendTouchMoveToWasm() {
+            if (typeof Module !== 'undefined' && Module.ccall) {
+                try {
+                    Module.ccall('eatscharted_set_touch_move', null, ['number', 'number', 'number'],
+                        [touchState.moveX, touchState.moveZ, touchState.dodge ? 1 : 0]);
+                } catch (e) {}
+            }
+        }
+
+        window.toggleTouchControls = function(force) {
+            if (force !== undefined) {
+                touchState.enabled = force;
+            } else {
+                touchState.enabled = !touchState.enabled;
+            }
+            if (touchState.enabled) {
+                touchLayer.classList.remove('hidden');
+                if (touchTogglePill) touchTogglePill.classList.add('active');
+                if (desktopHud) desktopHud.style.opacity = '0';
+            } else {
+                touchLayer.classList.add('hidden');
+                if (touchTogglePill) touchTogglePill.classList.remove('active');
+                if (desktopHud) desktopHud.style.opacity = '1';
+                touchState.moveX = 0.0;
+                touchState.moveZ = 0.0;
+                touchState.dodge = false;
+                sendTouchMoveToWasm();
+            }
+        };
+
+        function isMobileDevice() {
+            const ua = navigator.userAgent || navigator.vendor || window.opera || '';
+            const isMobileUA = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(ua);
+            const isIPadOS = (navigator.platform === 'MacIntel' || ua.includes('Macintosh')) && navigator.maxTouchPoints > 1;
+            const isUADataMobile = Boolean(navigator.userAgentData && navigator.userAgentData.mobile);
+            const isTouchOnly = Boolean(window.matchMedia && window.matchMedia('(pointer: coarse) and (hover: none)').matches);
+            const isSmallTouch = (('ontouchstart' in window) || navigator.maxTouchPoints > 0) && window.innerWidth <= 860;
+            return Boolean(isMobileUA || isIPadOS || isUADataMobile || isTouchOnly || isSmallTouch);
+        }
+
+        if (isMobileDevice()) {
+            document.body.classList.add('is-mobile');
+            if (touchTogglePill) touchTogglePill.style.display = 'none';
+            toggleTouchControls(true);
+        } else {
+            toggleTouchControls(false);
+        }
+
+        window.addEventListener('resize', function() {
+            if (isMobileDevice()) {
+                document.body.classList.add('is-mobile');
+                if (touchTogglePill) touchTogglePill.style.display = 'none';
+                if (!touchState.enabled) toggleTouchControls(true);
+            }
+        });
+
+        // Desktop Canvas Mouse Click -> Slash / Spell (only when not in touch mode)
+        if (canvasElem) {
+            canvasElem.addEventListener('mousedown', function(e) {
+                canvasElem.focus();
+                if (touchState.enabled) return;
+                if (typeof Module !== 'undefined' && Module.ccall) {
+                    if (e.button === 0) {
+                        Module.ccall('eatscharted_trigger_slash', null, [], []);
+                    } else if (e.button === 2) {
+                        Module.ccall('eatscharted_trigger_spell', null, [], []);
+                    }
+                }
+            });
+        }
+
+        // Left Compass Joystick Handlers (Hero Movement & Caravel Sailing)
+        function onStickStart(e) {
+            e.preventDefault();
+            for (let i = 0; i < e.changedTouches.length; i++) {
+                const t = e.changedTouches[i];
+                if (touchState.stickTouchId === null) {
+                    touchState.stickTouchId = t.identifier;
+                    touchState.stickStartX = t.clientX;
+                    touchState.stickStartY = t.clientY;
+
+                    joystickBase.style.left = t.clientX + 'px';
+                    joystickBase.style.top = t.clientY + 'px';
+                    joystickPuck.style.transform = 'translate(-50%, -50%)';
+                    joystickBase.classList.add('active');
+                    break;
+                }
+            }
+        }
+
+        function onStickMove(e) {
+            if (touchState.stickTouchId === null) return;
+            for (let i = 0; i < e.changedTouches.length; i++) {
+                const t = e.changedTouches[i];
+                if (t.identifier === touchState.stickTouchId) {
+                    let dx = t.clientX - touchState.stickStartX;
+                    let dy = t.clientY - touchState.stickStartY;
+                    const dist = Math.hypot(dx, dy);
+
+                    if (dist > touchState.maxRadius) {
+                        const ratio = touchState.maxRadius / dist;
+                        dx *= ratio;
+                        dy *= ratio;
+                    }
+
+                    joystickPuck.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
+
+                    touchState.moveX = dx / touchState.maxRadius;
+                    touchState.moveZ = -dy / touchState.maxRadius; // Screen up = +Z north on map
+                    sendTouchMoveToWasm();
+                    break;
+                }
+            }
+        }
+
+        function onStickEnd(e) {
+            if (touchState.stickTouchId === null) return;
+            for (let i = 0; i < e.changedTouches.length; i++) {
+                const t = e.changedTouches[i];
+                if (t.identifier === touchState.stickTouchId) {
+                    touchState.stickTouchId = null;
+                    touchState.moveX = 0.0;
+                    touchState.moveZ = 0.0;
+                    joystickBase.classList.remove('active');
+                    joystickPuck.style.transform = 'translate(-50%, -50%)';
+                    sendTouchMoveToWasm();
+                    break;
+                }
+            }
+        }
+
+        if (touchStickZone) {
+            touchStickZone.addEventListener('touchstart', onStickStart, { passive: false });
+            window.addEventListener('touchmove', onStickMove, { passive: false });
+            window.addEventListener('touchend', onStickEnd, { passive: false });
+            window.addEventListener('touchcancel', onStickEnd, { passive: false });
+        }
+
+        // Right Zone Vertical Swipe -> Smooth Atlas Camera Zoom Scrubber
+        function onLookStart(e) {
+            for (let i = 0; i < e.changedTouches.length; i++) {
+                const t = e.changedTouches[i];
+                if (touchState.lookTouchId === null) {
+                    touchState.lookTouchId = t.identifier;
+                    touchState.lastLookY = t.clientY;
+                    break;
+                }
+            }
+        }
+
+        function onLookMove(e) {
+            if (touchState.lookTouchId === null) return;
+            for (let i = 0; i < e.changedTouches.length; i++) {
+                const t = e.changedTouches[i];
+                if (t.identifier === touchState.lookTouchId) {
+                    const deltaY = t.clientY - touchState.lastLookY;
+                    touchState.lastLookY = t.clientY;
+                    if (typeof Module !== 'undefined' && Module.ccall && Math.abs(deltaY) > 0.5) {
+                        try {
+                            Module.ccall('eatscharted_add_atlas_zoom', null, ['number'], [deltaY * 0.0045]);
+                        } catch (err) {}
+                    }
+                    break;
+                }
+            }
+        }
+
+        function onLookEnd(e) {
+            if (touchState.lookTouchId === null) return;
+            for (let i = 0; i < e.changedTouches.length; i++) {
+                const t = e.changedTouches[i];
+                if (t.identifier === touchState.lookTouchId) {
+                    touchState.lookTouchId = null;
+                    break;
+                }
+            }
+        }
+
+        if (touchLookZone) {
+            touchLookZone.addEventListener('touchstart', onLookStart, { passive: false });
+            window.addEventListener('touchmove', onLookMove, { passive: false });
+            window.addEventListener('touchend', onLookEnd, { passive: false });
+            window.addEventListener('touchcancel', onLookEnd, { passive: false });
+        }
+
+        // Action Buttons Setup (Slash, Spell, Dodge/Sprint, Atlas Zoom, Dungeon Portal)
+        function bindTapAction(elemId, actionFn) {
+            const btn = document.getElementById(elemId);
+            if (!btn) return;
+            const trigger = function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                btn.classList.add('active');
+                actionFn(btn);
+                setTimeout(function() { btn.classList.remove('active'); }, 150);
+            };
+            btn.addEventListener('touchstart', trigger, { passive: false });
+            btn.addEventListener('mousedown', trigger);
+        }
+
+        bindTapAction('btn-touch-slash', function() {
+            if (typeof Module !== 'undefined' && Module.ccall) {
+                try { Module.ccall('eatscharted_trigger_slash', null, [], []); } catch (e) {}
+            }
+        });
+
+        bindTapAction('btn-touch-spell', function() {
+            if (typeof Module !== 'undefined' && Module.ccall) {
+                try { Module.ccall('eatscharted_trigger_spell', null, [], []); } catch (e) {}
+            }
+        });
+
+        bindTapAction('btn-touch-dungeon', function() {
+            if (typeof Module !== 'undefined' && Module.ccall) {
+                try { Module.ccall('eatscharted_toggle_dungeon', 'number', [], []); } catch (e) {}
+            }
+        });
+
+        const btnAtlas = document.getElementById('btn-touch-atlas');
+        if (btnAtlas) {
+            const toggleAtlasHandler = function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                if (typeof Module !== 'undefined' && Module.ccall) {
+                    try {
+                        const isAtlas = Module.ccall('eatscharted_toggle_atlas', 'number', [], []);
+                        if (isAtlas) {
+                            btnAtlas.classList.add('active');
+                        } else {
+                            btnAtlas.classList.remove('active');
+                        }
+                    } catch (err) {}
+                }
+            };
+            btnAtlas.addEventListener('touchstart', toggleAtlasHandler, { passive: false });
+            btnAtlas.addEventListener('mousedown', toggleAtlasHandler);
+        }
+
+        const btnDodge = document.getElementById('btn-touch-dodge');
+        if (btnDodge) {
+            const dodgeDown = function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                btnDodge.classList.add('active');
+                touchState.dodge = true;
+                sendTouchMoveToWasm();
+            };
+            const dodgeUp = function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                btnDodge.classList.remove('active');
+                touchState.dodge = false;
+                sendTouchMoveToWasm();
+            };
+            btnDodge.addEventListener('touchstart', dodgeDown, { passive: false });
+            btnDodge.addEventListener('touchend', dodgeUp, { passive: false });
+            btnDodge.addEventListener('touchcancel', dodgeUp, { passive: false });
+            btnDodge.addEventListener('mousedown', dodgeDown);
+            btnDodge.addEventListener('mouseup', dodgeUp);
+            btnDodge.addEventListener('mouseleave', dodgeUp);
+        }
+
+        window.addEventListener('keydown', function(evt) {
+            if (evt.key === 'Escape') {
+                toggleSceneDrawer(false);
+            }
+        });
+
+        buildSceneGrid();
+
+        // -------------------------------------------------------------
+        // WEBGPU DEVICE INITIALIZATION & EMSCRIPTEN RUNTIME MODULE
+        // -------------------------------------------------------------
+        let webgpuDevicePromise = null;
+        if (navigator.gpu) {
+            webgpuDevicePromise = navigator.gpu.requestAdapter().then(function(adapter) {
+                if (!adapter) {
+                    throw new Error('No appropriate GPUAdapter found.');
+                }
+                return adapter.requestDevice();
+            }).catch(function(err) {
+                console.error('[WebGPU] Failed to acquire WebGPU device:', err);
+                return null;
+            });
+        } else {
+            badge.innerHTML = '<div class="badge-dot" style="background:#ef4444;box-shadow:0 0 8px #ef4444;"></div><span>WebGPU Unsupported</span>';
+            statusText.className = 'status-text error';
+            statusText.innerText = 'WebGPU is not supported in this browser. Please enable WebGPU in Chrome, Edge, or Safari 18+ on iOS.';
+        }
+
+        var Module = {
+            preRun: [
+                function() {
+                    if (webgpuDevicePromise) {
+                        Module.addRunDependency('webgpu-device');
+                        webgpuDevicePromise.then(function(device) {
+                            if (device) {
+                                Module.preinitializedWebGPUDevice = device;
+                                console.log('[WebGPU] Preinitialized WebGPU GPUDevice ready:', device);
+                            }
+                            Module.removeRunDependency('webgpu-device');
+                        }).catch(function(err) {
+                            console.error('[WebGPU] Error resolving WebGPU device:', err);
+                            Module.removeRunDependency('webgpu-device');
+                        });
+                    }
+                }
+            ],
+            postRun: [
+                function() {
+                    unlockAudio();
+                    window.hideAppLoadingScreen();
+                }
+            ],
+            print: function(text) {
+                console.log('[Eatscharted WASM]', text);
+            },
+            printErr: function(text) {
+                console.error('[Eatscharted WASM Error]', text);
+            },
+            canvas: (function() {
+                return document.getElementById('canvas');
+            })(),
+            locateFile: function(path, prefix) {
+                return prefix + path;
+            },
+            setStatus: function(text) {
+                if (text && text.length > 0 && statusText) {
+                    statusText.innerText = text.toUpperCase();
+                }
+            },
+            totalDependencies: 0,
+            monitorRunDependencies: function(left) {
+                this.totalDependencies = Math.max(this.totalDependencies, left);
+                Module.setStatus(left ? 'LOADING CARTOGRAPHY RECIPES... (' + (this.totalDependencies - left) + '/' + this.totalDependencies + ')' : 'RECIPES LOADED. SYNTHESIZING 32-LAYER INK ATLAS...');
+            }
+        };
+
+        window.onerror = function(event) {
+            if (statusText) {
+                statusText.className = 'status-text error';
+                statusText.innerText = 'INITIALIZATION ERROR: ' + event;
+            }
+        };
+    </script>
+    {{{ SCRIPT }}}
+</body>
+</html>
+

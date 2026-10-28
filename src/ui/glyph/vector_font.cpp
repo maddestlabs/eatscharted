@@ -609,8 +609,8 @@ bool renderVectorFontGlyph(BatchRenderer2D& r, uint32_t cp,
         x, y,
         w / 10.0f,
         h / 16.0f,
-        std::max(1.15f, std::round(w * 0.165f)), // Optical vertical stem
-        std::max(1.05f, std::round(h * 0.082f)), // Optical horizontal bar
+        std::max(1.25f, w * 0.175f), // Optical vertical stem with subpixel smooth sizing
+        std::max(1.15f, h * 0.095f), // Optical horizontal bar with subpixel smooth sizing
         red, green, blue, alpha
     };
 

@@ -101,6 +101,17 @@ public:
 
     [[nodiscard]] ChartFieldSample sampleAt(float worldX, float worldZ) const noexcept;
 
+    // Fast-path evaluation when elevation, moisture, and local finite-difference slope are precomputed
+    [[nodiscard]] ChartFieldSample sampleAtKnown(
+        float worldX, float worldZ,
+        float hC, float mC,
+        float gradX, float gradZ,
+        float hOff, float mOff
+    ) const noexcept;
+
+    [[nodiscard]] float rawElevation(float wx, float wz) const noexcept { return rawElevationAt(wx, wz); }
+    [[nodiscard]] float rawMoisture(float wx, float wz) const noexcept { return rawMoistureAt(wx, wz); }
+
     [[nodiscard]] uint32_t seed() const noexcept { return seed_; }
     [[nodiscard]] AtlasPreset preset() const noexcept { return preset_; }
     [[nodiscard]] bool isDungeonMode() const noexcept { return preset_ == AtlasPreset::OnePageDungeon; }
@@ -112,9 +123,15 @@ public:
     [[nodiscard]] const std::vector<CurvedMapBanner>& banners() const noexcept { return banners_; }
     [[nodiscard]] const std::vector<DungeonRoom>& dungeonRooms() const noexcept { return dungeonRooms_; }
 
+    // Dynamically seeds and streams macro-blocks/chunks as the hero explores across the infinite map
+    void ensureRegionBlocks(float centerWorldX, float centerWorldZ, float radius = 96.0f);
+
 private:
     void generateOverworldGraph();
     void generateOnePageDungeonLayout();
+    void generateMacroBlock(int bx, int bz);
+    void addCurvedRoad(Vec2f a, Vec2f ctrl, Vec2f b, bool isHighway);
+    void addWindingRiver(Vec2f start, Vec2f mid, Vec2f mouth, float startWidth, float endWidth);
 
     [[nodiscard]] float rawElevationAt(float wx, float wz) const noexcept;
     [[nodiscard]] float rawMoistureAt(float wx, float wz) const noexcept;
@@ -127,6 +144,7 @@ private:
     std::vector<ChartPoi> pois_;
     std::vector<CurvedMapBanner> banners_;
     std::vector<DungeonRoom> dungeonRooms_;
+    std::vector<uint64_t> generatedBlocks_;
 };
 
 } // namespace eatscharted

@@ -1,4 +1,5 @@
 #include "eatscharted/voronoi_atlas.hpp"
+#include "eatscharted/procedural_names.hpp"
 #include <cmath>
 #include <algorithm>
 #include <limits>
@@ -14,6 +15,11 @@ namespace {
     x *= 0x846CA68Bu;
     x ^= x >> 16u;
     return x;
+}
+
+[[nodiscard]] inline uint64_t packBlockCoord(int bx, int bz) noexcept {
+    return (static_cast<uint64_t>(static_cast<uint32_t>(bx)) << 32u) |
+           static_cast<uint64_t>(static_cast<uint32_t>(bz));
 }
 
 [[nodiscard]] float hashFloat(int x, int z, uint32_t seed) noexcept {
@@ -100,6 +106,8 @@ void VoronoiAtlas::generate(uint32_t seed, AtlasPreset preset) {
     pois_.clear();
     banners_.clear();
     dungeonRooms_.clear();
+    generatedBlocks_.clear();
+    generatedBlocks_.push_back(packBlockCoord(0, 0));
 
     if (preset_ == AtlasPreset::OnePageDungeon) {
         generateOnePageDungeonLayout();
@@ -139,31 +147,82 @@ float VoronoiAtlas::rawElevationAt(float wx, float wz) const noexcept {
 
         // Northern alpine ridge spine
         float spineDz = (qz - 42.0f) / 24.0f;
-        float spine = std::exp(-(spineDz * spineDz)) * ridge * 0.95f;
+        float spine = std::exp(-(spineDz * spineDz)) * ridge * 1.25f;
 
-        float hNorm = mainlandBias - bayCarve + isl1 + isl2 + spine + detail * 0.48f;
+        // Sorcery! tactile rolling mounds & foothills
+        float mounds = std::pow(std::max(0.0f, fbmNoise(qx * 0.048f + 5.2f, qz * 0.048f - 3.1f, seed_ + 89u, 3)), 1.8f) * 0.72f;
+        float crags = (1.0f - std::abs(fbmNoise(qx * 0.055f, qz * 0.055f, seed_ + 103u, 3))) * ridge * 0.55f;
+
+        float hNorm = mainlandBias - bayCarve + isl1 + isl2 + spine + mounds + crags + detail * 0.42f;
         return hNorm * 6.5f;
     } else if (preset_ == AtlasPreset::ShatteredArchipelago) {
         // Multi-island nautical chart with central lagoon & surrounding coral/rocky islands
         float r = std::sqrt(qx * qx + qz * qz);
         float ring = std::exp(-std::pow((r - 36.0f) / 22.0f, 2.0f)) * 0.55f;
-        float centerIsle = std::exp(-(qx * qx + qz * qz) / (18.0f * 18.0f)) * 0.65f;
+        float centerIsle = std::exp(-(qx * qx + qz * qz) / (18.0f * 18.0f)) * 0.75f;
+        float mounds = std::pow(std::max(0.0f, fbmNoise(qx * 0.05f, qz * 0.05f, seed_ + 89u, 3)), 1.6f) * 0.55f;
         float archipelago = fbmNoise(qx * 0.028f, qz * 0.028f, seed_ + 113u, 5) * 0.85f;
-        float hNorm = ring + centerIsle + archipelago - 0.18f;
+        float hNorm = ring + centerIsle + archipelago + mounds - 0.18f;
         return hNorm * 6.2f;
     } else {
         // HighlandKingdom: Twin mountain ranges flanking a lush central river valley
         float valleyDist = std::abs(qx - std::sin(qz * 0.035f) * 18.0f);
         float valleyProfile = std::clamp((valleyDist - 10.0f) / 42.0f, -0.25f, 1.1f);
         float southernCoast = std::clamp((qz + 58.0f) / 25.0f, -0.6f, 0.4f);
-        float hNorm = valleyProfile * 0.65f + southernCoast * 0.45f + detail * 0.42f + ridge * 0.35f;
+        float crags = (1.0f - std::abs(fbmNoise(qx * 0.045f, qz * 0.045f, seed_ + 117u, 3))) * ridge * 0.65f;
+        float mounds = std::pow(std::max(0.0f, fbmNoise(qx * 0.042f, qz * 0.042f, seed_ + 71u, 3)), 1.7f) * 0.60f;
+        float hNorm = valleyProfile * 0.85f + southernCoast * 0.45f + detail * 0.42f + crags + mounds;
         return hNorm * 7.2f;
     }
 }
 
 float VoronoiAtlas::rawMoistureAt(float wx, float wz) const noexcept {
+    if (preset_ == AtlasPreset::PerilousPeninsula) {
+        // High moisture in northern/western peninsula interior (Duskwoods), arid in central/southern plains (Dragon Desert)
+        float forestBias = std::exp(-((wx + 8.0f) * (wx + 8.0f) + (wz - 34.0f) * (wz - 34.0f)) / (22.0f * 22.0f)) * 0.78f;
+        float desertBias = std::exp(-((wx - 14.0f) * (wx - 14.0f) + (wz + 6.0f) * (wz + 6.0f)) / (26.0f * 26.0f)) * 0.42f;
+        float m = 0.42f + forestBias - desertBias + fbmNoise(wx * 0.021f, wz * 0.021f, seed_ + 211u, 3) * 0.20f;
+        return std::clamp(m, 0.0f, 1.0f);
+    }
     float m = 0.52f + fbmNoise(wx * 0.021f + 31.0f, wz * 0.021f - 19.0f, seed_ + 211u, 4) * 0.48f;
     return std::clamp(m, 0.0f, 1.0f);
+}
+
+void VoronoiAtlas::addWindingRiver(Vec2f start, Vec2f mid, Vec2f mouth, float startWidth, float endWidth) {
+    constexpr int kSteps = 18;
+    Vec2f prev = start;
+    for (int i = 1; i <= kSteps; ++i) {
+        float t = static_cast<float>(i) / static_cast<float>(kSteps);
+        float u = 1.0f - t;
+        Vec2f pt{
+            u * u * start.x + 2.0f * u * t * mid.x + t * t * mouth.x,
+            u * u * start.y + 2.0f * u * t * mid.y + t * t * mouth.y
+        };
+        float meander = std::sin(t * 12.56f + static_cast<float>(seed_ % 7u)) * (1.0f - t * 0.5f) * 2.8f;
+        pt.x += meander;
+        float w0 = startWidth + (endWidth - startWidth) * (static_cast<float>(i - 1) / static_cast<float>(kSteps));
+        float w1 = startWidth + (endWidth - startWidth) * t;
+        rivers_.push_back(RiverSegment{prev, pt, w0, w1});
+        prev = pt;
+    }
+}
+
+void VoronoiAtlas::addCurvedRoad(Vec2f a, Vec2f ctrl, Vec2f b, bool isHighway) {
+    constexpr int kSegs = 14;
+    Vec2f prev = a;
+    float accumArc = 0.0f;
+    for (int i = 1; i <= kSegs; ++i) {
+        float t = static_cast<float>(i) / static_cast<float>(kSegs);
+        float u = 1.0f - t;
+        Vec2f pt{
+            u * u * a.x + 2.0f * u * t * ctrl.x + t * t * b.x,
+            u * u * a.y + 2.0f * u * t * ctrl.y + t * t * b.y
+        };
+        float segLen = std::sqrt((pt.x - prev.x) * (pt.x - prev.x) + (pt.y - prev.y) * (pt.y - prev.y));
+        roads_.push_back(RoadSegment{prev, pt, accumArc, accumArc + segLen, isHighway});
+        accumArc += segLen;
+        prev = pt;
+    }
 }
 
 void VoronoiAtlas::generateOverworldGraph() {
@@ -238,29 +297,9 @@ void VoronoiAtlas::generateOverworldGraph() {
     }
 
     // 2. Synthesize Watabou-style Winding Rivers from high hills down to the coast
-    auto addWindingRiver = [&](Vec2f start, Vec2f mid, Vec2f mouth, float startWidth, float endWidth) {
-        constexpr int kSteps = 18;
-        Vec2f prev = start;
-        for (int i = 1; i <= kSteps; ++i) {
-            float t = static_cast<float>(i) / static_cast<float>(kSteps);
-            float u = 1.0f - t;
-            Vec2f pt{
-                u * u * start.x + 2.0f * u * t * mid.x + t * t * mouth.x,
-                u * u * start.y + 2.0f * u * t * mid.y + t * t * mouth.y
-            };
-            // Add organic meander perpendicular to flow
-            float meander = std::sin(t * 12.56f + static_cast<float>(seed_ % 7u)) * (1.0f - t * 0.5f) * 2.8f;
-            pt.x += meander;
-            float w0 = startWidth + (endWidth - startWidth) * (static_cast<float>(i - 1) / static_cast<float>(kSteps));
-            float w1 = startWidth + (endWidth - startWidth) * t;
-            rivers_.push_back(RiverSegment{prev, pt, w0, w1});
-            prev = pt;
-        }
-    };
-
     if (preset_ == AtlasPreset::PerilousPeninsula) {
-        addWindingRiver({-8.0f, 56.0f}, {-14.0f, 22.0f}, {-12.0f, -6.0f}, 0.9f, 2.5f);
-        addWindingRiver({28.0f, 48.0f}, {10.0f, 24.0f},  {-12.0f, 12.0f}, 0.8f, 1.5f);
+        // Meandering river starting in alpine mountains past Shattered Palace and Dragon Desert to the sea
+        addWindingRiver({-12.0f, 6.0f}, {8.0f, -2.0f}, {32.0f, -8.0f}, 0.85f, 2.2f);
     } else if (preset_ == AtlasPreset::HighlandKingdom) {
         addWindingRiver({-4.0f, 70.0f}, {2.0f, 10.0f},   {-6.0f, -55.0f}, 1.2f, 3.2f);
         addWindingRiver({-44.0f, 38.0f}, {-20.0f, 14.0f},{-1.0f, 4.0f},   0.8f, 1.6f);
@@ -268,7 +307,7 @@ void VoronoiAtlas::generateOverworldGraph() {
         addWindingRiver({4.0f, 16.0f},  {0.0f, 4.0f},    {-10.0f, -12.0f},0.7f, 1.6f);
     }
 
-    // 3. Place Cat Quest & Perilous Shores Landmarks / Settlements (POIs)
+    // 3. Place Cat Quest & Perilous Shores Landmarks / Settlements (POIs - Reference: Kildland Map)
     auto addPoi = [&](PoiCategory cat, float x, float z, const char* name, const char* sub, int lvl) {
         ChartPoi p{};
         p.category   = cat;
@@ -282,16 +321,22 @@ void VoronoiAtlas::generateOverworldGraph() {
     };
 
     if (preset_ == AtlasPreset::PerilousPeninsula) {
-        addPoi(PoiCategory::PortHarbor,      -4.0f,  -4.0f, "PORT PAWVEN",       "Royal Cartographer's Harbor", 1);
-        addPoi(PoiCategory::CitadelKeep,     16.0f,  16.0f, "CITADEL OF AETHEL", "Walled Bastion of the Realm", 3);
-        addPoi(PoiCategory::MarketHamlet,   -24.0f,  18.0f, "OAKENFORD HAMLET",  "Timber Mill & Crossroads",    2);
-        addPoi(PoiCategory::Windmill,         4.0f,   8.0f, "GOLDENSPUR MILL",   "Wind-Swept Grain Terraces",   1);
-        addPoi(PoiCategory::DungeonPortal,   34.0f,  32.0f, "SUNKEN SANCTUM",    "Lv. 4 Ancient Crypt Portal",  4);
-        addPoi(PoiCategory::AlpineMonastery, -8.0f,  46.0f, "STARFALL ABBEY",    "Highland Astrologer Spire",   5);
-        addPoi(PoiCategory::Lighthouse,     -34.0f, -26.0f, "BEACON ISLE",       "Lantern of the Outer Shoals", 2);
-        addPoi(PoiCategory::SunkenRuin,      26.0f, -32.0f, "DROWNED OBELISK",   "Shattered Sea-King Ruins",    6);
-        addPoi(PoiCategory::StandingStones, -32.0f,  38.0f, "WHISPERING STONES", "Leyline Pact Circle",         3);
-        addPoi(PoiCategory::BossLair,        42.0f,   4.0f, "WYVERN'S CRAG",     "Lv. 8 Elder Sea-Wyvern Lair", 8);
+        std::string townName   = (seed_ == 1492u) ? "LOWMILLBURG" : ProceduralNameGenerator::generateLocaleName(seed_ + 1u, BiomeId::LushMeadow, PoiCategory::CitadelKeep);
+        std::string hamletName = (seed_ == 1492u) ? "COLDHEARTFIELD" : ProceduralNameGenerator::generateLocaleName(seed_ + 2u, BiomeId::LushMeadow, PoiCategory::MarketHamlet);
+        std::string portName   = (seed_ == 1492u) ? "STORMPOOL" : ProceduralNameGenerator::generateLocaleName(seed_ + 3u, BiomeId::CoastalShoals, PoiCategory::PortHarbor);
+        std::string dungeon1   = (seed_ == 1492u) ? "SHATTERED PALACE" : ProceduralNameGenerator::generateLocaleName(seed_ + 4u, BiomeId::AlpinePeak, PoiCategory::DungeonPortal);
+        std::string dungeon2   = (seed_ == 1492u) ? "FORT OF THE UNDEAD-ONE" : ProceduralNameGenerator::generateLocaleName(seed_ + 5u, BiomeId::CoastalShoals, PoiCategory::DungeonPortal);
+
+        addPoi(PoiCategory::CitadelKeep,      6.0f, -34.0f, townName.c_str(),         "Southern Walled Citadel & Castle", 3);
+        addPoi(PoiCategory::Windmill,         1.0f, -38.0f, "LOWMILL GRANGE",         "Farmland Grain Terraces",          1);
+        addPoi(PoiCategory::Windmill,        11.0f, -38.0f, "WESTVALE MILL",          "Valley Windmill",                  1);
+        addPoi(PoiCategory::MarketHamlet,    18.0f,  12.0f, hamletName.c_str(),       "Terracotta Hamlet & Fields",       2);
+        addPoi(PoiCategory::PortHarbor,      32.0f, -12.0f, portName.c_str(),         "Eastern Nautical Cape & Harbor",   1);
+        addPoi(PoiCategory::Lighthouse,      37.0f, -10.0f, "STORMPOOL BEACON",      "Watchtower of the Eastern Shoals", 2);
+        addPoi(PoiCategory::DungeonPortal,  -14.0f,   4.0f, dungeon1.c_str(),         "Ancient Sunken Necropolis",        4);
+        addPoi(PoiCategory::DungeonPortal,  -26.0f, -16.0f, dungeon2.c_str(),         "Coastal Fortress of Whispers",    5);
+        addPoi(PoiCategory::AlpineMonastery, -2.0f,  46.0f, "STARFALL ABBEY",         "Highland Astrologer Spire",        5);
+        addPoi(PoiCategory::SunkenRuin,      26.0f, -32.0f, "DROWNED OBELISK",        "Shattered Sea-King Ruins",         6);
     } else if (preset_ == AtlasPreset::ShatteredArchipelago) {
         addPoi(PoiCategory::PortHarbor,       0.0f,  -6.0f, "CORSAIR'S HAVEN",   "Central Atoll Anchorage",     2);
         addPoi(PoiCategory::Lighthouse,     -32.0f, -18.0f, "STORMGLASS TOWER",  "Western Reef Beacon",         3);
@@ -306,34 +351,15 @@ void VoronoiAtlas::generateOverworldGraph() {
     }
 
     // 4. Synthesize Spline Trade Roads & Dashed Wilderness Trails between POIs
-    auto addCurvedRoad = [&](Vec2f a, Vec2f ctrl, Vec2f b, bool isHighway) {
-        constexpr int kSegs = 14;
-        Vec2f prev = a;
-        float accumArc = 0.0f;
-        for (int i = 1; i <= kSegs; ++i) {
-            float t = static_cast<float>(i) / static_cast<float>(kSegs);
-            float u = 1.0f - t;
-            Vec2f pt{
-                u * u * a.x + 2.0f * u * t * ctrl.x + t * t * b.x,
-                u * u * a.y + 2.0f * u * t * ctrl.y + t * t * b.y
-            };
-            float segLen = std::sqrt((pt.x - prev.x) * (pt.x - prev.x) + (pt.y - prev.y) * (pt.y - prev.y));
-            roads_.push_back(RoadSegment{prev, pt, accumArc, accumArc + segLen, isHighway});
-            accumArc += segLen;
-            prev = pt;
-        }
-    };
-
     if (preset_ == AtlasPreset::PerilousPeninsula) {
-        // Royal double-cased ink highway: Port Pawven -> Goldenspur Mill -> Citadel of Aethel
-        addCurvedRoad({-4.0f, -4.0f},  {2.0f,  6.0f},  {16.0f, 16.0f}, true);
-        // Highway west to Oakenford Hamlet
-        addCurvedRoad({-4.0f, -4.0f},  {-16.0f, 6.0f}, {-24.0f, 18.0f}, true);
-        // Dashed explorer trails to Sunken Sanctum, Starfall Abbey, and Wyvern's Crag
-        addCurvedRoad({16.0f, 16.0f},  {26.0f, 22.0f}, {34.0f, 32.0f}, false);
-        addCurvedRoad({-24.0f, 18.0f}, {-18.0f, 34.0f},{-8.0f, 46.0f}, false);
-        addCurvedRoad({16.0f, 16.0f},  {30.0f, 12.0f}, {42.0f,  4.0f}, false);
-        addCurvedRoad({-24.0f, 18.0f}, {-30.0f, 28.0f},{-32.0f, 38.0f}, false);
+        // Reference Dotted Crimson Route: Coldheartfield -> Stormpool -> Lowmillburg
+        addCurvedRoad({18.0f, 12.0f},  {26.0f, 0.0f},   {32.0f, -12.0f}, false);
+        addCurvedRoad({32.0f, -12.0f}, {22.0f, -24.0f}, {6.0f, -34.0f},  false);
+        // Wilderness trail to Shattered Palace and Fort Of The Undead-One
+        addCurvedRoad({18.0f, 12.0f},  {2.0f, 8.0f},    {-14.0f, 4.0f},  false);
+        addCurvedRoad({-14.0f, 4.0f},  {-20.0f, -4.0f}, {-26.0f, -16.0f},false);
+        // Royal highway around Lowmillburg castle & windmills
+        addCurvedRoad({6.0f, -34.0f},  {1.0f, -38.0f},  {11.0f, -38.0f}, true);
     } else if (preset_ == AtlasPreset::HighlandKingdom) {
         addCurvedRoad({-22.0f, -16.0f},{-10.0f, -4.0f},{0.0f, 6.0f},   true);
         addCurvedRoad({0.0f, 6.0f},    {18.0f, 20.0f}, {32.0f, 36.0f}, false);
@@ -342,26 +368,53 @@ void VoronoiAtlas::generateOverworldGraph() {
 
     // 5. Place Curved Calligraphic Map Banners (Watabou Perilous Shores + Cat Quest region titles)
     if (preset_ == AtlasPreset::PerilousPeninsula) {
-        banners_.push_back(CurvedMapBanner{
-            "THE PERILOUS SHORES",
-            {-38.0f, -18.0f}, {-10.0f, -26.0f}, {20.0f, -16.0f},
-            2.6f, true, true
-        });
-        banners_.push_back(CurvedMapBanner{
-            "WHISPERING WOODS",
-            {-36.0f, 24.0f}, {-18.0f, 30.0f}, {0.0f, 24.0f},
-            1.85f, true, false
-        });
-        banners_.push_back(CurvedMapBanner{
-            "DRAGONBONE RIDGE",
-            {-14.0f, 52.0f}, {12.0f, 58.0f}, {38.0f, 48.0f},
-            2.15f, true, false
-        });
-        banners_.push_back(CurvedMapBanner{
-            "CROWNLANDS",
-            {2.0f, 10.0f}, {16.0f, 13.0f}, {30.0f, 9.0f},
-            1.75f, true, false
-        });
+        if (seed_ == 1492u) {
+            banners_.push_back(CurvedMapBanner{
+                "KILDLAND",
+                {24.0f, 50.0f}, {40.0f, 54.0f}, {56.0f, 50.0f},
+                2.8f, true, false
+            });
+            banners_.push_back(CurvedMapBanner{
+                "DUSKWOODS",
+                {-24.0f, 26.0f}, {-14.0f, 30.0f}, {-4.0f, 26.0f},
+                2.6f, true, false
+            });
+            banners_.push_back(CurvedMapBanner{
+                "DRAGON DESERT",
+                {10.0f, -4.0f}, {22.0f, 0.0f}, {34.0f, -4.0f},
+                2.6f, true, false
+            });
+            banners_.push_back(CurvedMapBanner{
+                "THE PERILOUS SHORES",
+                {-32.0f, -20.0f}, {-6.0f, -24.0f}, {20.0f, -20.0f},
+                2.6f, true, true
+            });
+        } else {
+            std::string realmName  = ProceduralNameGenerator::generateRegionTitle(seed_, BiomeId::LushMeadow);
+            std::string forestName = ProceduralNameGenerator::generateRegionTitle(seed_ + 17u, BiomeId::DeciduousWoodland);
+            std::string desertName = ProceduralNameGenerator::generateRegionTitle(seed_ + 37u, BiomeId::AridSteppe);
+
+            banners_.push_back(CurvedMapBanner{
+                realmName,
+                {24.0f, 50.0f}, {40.0f, 54.0f}, {56.0f, 50.0f},
+                2.8f, true, false
+            });
+            banners_.push_back(CurvedMapBanner{
+                forestName,
+                {-24.0f, 26.0f}, {-14.0f, 30.0f}, {-4.0f, 26.0f},
+                2.6f, true, false
+            });
+            banners_.push_back(CurvedMapBanner{
+                desertName,
+                {10.0f, -4.0f}, {22.0f, 0.0f}, {34.0f, -4.0f},
+                2.6f, true, false
+            });
+            banners_.push_back(CurvedMapBanner{
+                "THE PERILOUS SHORES",
+                {-32.0f, -20.0f}, {-6.0f, -24.0f}, {20.0f, -20.0f},
+                2.6f, true, true
+            });
+        }
     } else if (preset_ == AtlasPreset::ShatteredArchipelago) {
         banners_.push_back(CurvedMapBanner{
             "THE SHATTERED SEA",
@@ -407,10 +460,292 @@ void VoronoiAtlas::generateOnePageDungeonLayout() {
     });
 }
 
-ChartFieldSample VoronoiAtlas::sampleAt(float worldX, float worldZ) const noexcept {
-    ChartFieldSample s{};
+void VoronoiAtlas::ensureRegionBlocks(float centerWorldX, float centerWorldZ, float radius) {
+    if (preset_ == AtlasPreset::OnePageDungeon) return;
 
+    constexpr float kBlockSize = 80.0f;
+    int minBx = static_cast<int>(std::floor((centerWorldX - radius) / kBlockSize));
+    int maxBx = static_cast<int>(std::ceil((centerWorldX + radius) / kBlockSize));
+    int minBz = static_cast<int>(std::floor((centerWorldZ - radius) / kBlockSize));
+    int maxBz = static_cast<int>(std::ceil((centerWorldZ + radius) / kBlockSize));
+
+    for (int bz = minBz; bz <= maxBz; ++bz) {
+        for (int bx = minBx; bx <= maxBx; ++bx) {
+            uint64_t key = packBlockCoord(bx, bz);
+            if (std::find(generatedBlocks_.begin(), generatedBlocks_.end(), key) == generatedBlocks_.end()) {
+                generateMacroBlock(bx, bz);
+                generatedBlocks_.push_back(key);
+            }
+        }
+    }
+}
+
+void VoronoiAtlas::generateMacroBlock(int bx, int bz) {
+    if (bx == 0 && bz == 0) return;
+
+    constexpr float kBlockSize = 80.0f;
+    float cx = static_cast<float>(bx) * kBlockSize;
+    float cz = static_cast<float>(bz) * kBlockSize;
+
+    uint32_t bHash = hashU32(static_cast<uint32_t>(bx) * 73856093u ^
+                             static_cast<uint32_t>(bz) * 19349663u ^
+                             seed_);
+
+    float jx = (static_cast<float>((bHash >> 4) & 0xFFu) / 255.0f - 0.5f) * (kBlockSize * 0.44f);
+    float jz = (static_cast<float>((bHash >> 12) & 0xFFu) / 255.0f - 0.5f) * (kBlockSize * 0.44f);
+    float pox = cx + jx;
+    float poz = cz + jz;
+
+    float h = rawElevationAt(pox, poz);
+    float m = rawMoistureAt(pox, poz);
+
+    ChartPoi poi{};
+    poi.pos = {pox, poz};
+    poi.elevation = std::max(0.2f, h);
+    poi.seed = bHash;
+    poi.questLevel = std::clamp(static_cast<int>(std::sqrt(pox * pox + poz * poz) / 30.0f) + 1, 1, 15);
+
+    bool isWater = (h <= 0.0f);
+    if (isWater) {
+        if (h > -1.8f && (bHash % 4u == 0u)) {
+            poi.category = (bHash % 2u == 0u) ? PoiCategory::SunkenRuin : PoiCategory::Lighthouse;
+            poi.name = ProceduralNameGenerator::generateLocaleName(bHash, BiomeId::CoastalShoals, poi.category);
+            poi.subtitle = (poi.category == PoiCategory::Lighthouse) ? "Reef Beacon & Anchorage" : "Sunken Coral Obelisk";
+            pois_.push_back(poi);
+        } else {
+            std::string oceanTitle = ProceduralNameGenerator::generateRegionTitle(bHash, BiomeId::OceanDeep);
+            banners_.push_back(CurvedMapBanner{
+                oceanTitle,
+                {pox - 16.0f, poz - 6.0f}, {pox, poz - 12.0f}, {pox + 16.0f, poz - 6.0f},
+                2.4f, true, true
+            });
+            return;
+        }
+    } else {
+        BiomeId biome = classifyBiome(h, m, 8.0f, bHash);
+        if (h > 4.5f) {
+            poi.category = (bHash % 3u == 0u) ? PoiCategory::AlpineMonastery : PoiCategory::DungeonPortal;
+            poi.subtitle = (poi.category == PoiCategory::AlpineMonastery) ? "Highland Astrologer Spire" : "Ancient Mountain Barrow";
+        } else if (biome == BiomeId::DeciduousWoodland || biome == BiomeId::TaigaPines) {
+            uint32_t sel = bHash % 3u;
+            if (sel == 0u) {
+                poi.category = PoiCategory::MarketHamlet;
+                poi.subtitle = "Forest Outpost & Timber Mills";
+            } else if (sel == 1u) {
+                poi.category = PoiCategory::Windmill;
+                poi.subtitle = "Valley Granary & Windmill";
+            } else {
+                poi.category = PoiCategory::DungeonPortal;
+                poi.subtitle = "Overgrown Skull Crypt";
+            }
+        } else if (biome == BiomeId::AridSteppe || biome == BiomeId::BadlandsCanyon) {
+            poi.category = (bHash % 2u == 0u) ? PoiCategory::CitadelKeep : PoiCategory::SunkenRuin;
+            poi.subtitle = (poi.category == PoiCategory::CitadelKeep) ? "Sun-Drenched Sandstone Fortress" : "Buried Desert Pillars";
+        } else if (biome == BiomeId::SandyBeach || biome == BiomeId::SaltMarsh) {
+            poi.category = (bHash % 2u == 0u) ? PoiCategory::PortHarbor : PoiCategory::Lighthouse;
+            poi.subtitle = (poi.category == PoiCategory::PortHarbor) ? "Shoal Harbor & Fishing Pier" : "Coastal Watchtower Beacon";
+        } else {
+            uint32_t sel = bHash % 4u;
+            if (sel == 0u) {
+                poi.category = PoiCategory::CitadelKeep;
+                poi.subtitle = "Walled Overland Keep";
+            } else if (sel == 1u) {
+                poi.category = PoiCategory::MarketHamlet;
+                poi.subtitle = "Verdant Village & Orchards";
+            } else if (sel == 2u) {
+                poi.category = PoiCategory::StandingStones;
+                poi.subtitle = "Ancient Sunken Megalith Ring";
+            } else {
+                poi.category = PoiCategory::Windmill;
+                poi.subtitle = "Hillside Flour Mill";
+            }
+        }
+        poi.name = ProceduralNameGenerator::generateLocaleName(bHash, biome, poi.category);
+        pois_.push_back(poi);
+
+        if ((bHash % 4u == 0u)) {
+            std::string rTitle = ProceduralNameGenerator::generateRegionTitle(bHash + 99u, biome);
+            banners_.push_back(CurvedMapBanner{
+                ProceduralNameGenerator::formatCatQuestTracking(rTitle),
+                {pox - 18.0f, poz + 14.0f}, {pox, poz + 20.0f}, {pox + 18.0f, poz + 14.0f},
+                2.5f, true, false
+            });
+        }
+
+        // Connect to nearest existing land POI within trade-route distance
+        float bestDist = 130.0f;
+        int bestIdx = -1;
+        for (size_t i = 0; i + 1 < pois_.size(); ++i) {
+            float dx = pox - pois_[i].pos.x;
+            float dz = poz - pois_[i].pos.y;
+            float d = std::sqrt(dx * dx + dz * dz);
+            if (d > 25.0f && d < bestDist && pois_[i].elevation > 0.05f) {
+                bestDist = d;
+                bestIdx = static_cast<int>(i);
+            }
+        }
+        if (bestIdx >= 0) {
+            Vec2f pA = pois_[bestIdx].pos;
+            Vec2f pB = poi.pos;
+            Vec2f mid{(pA.x + pB.x) * 0.5f, (pA.y + pB.y) * 0.5f};
+            float jxRoad = (static_cast<float>((bHash >> 8) & 0x1Fu) / 31.0f - 0.5f) * 16.0f;
+            float jzRoad = (static_cast<float>((bHash >> 13) & 0x1Fu) / 31.0f - 0.5f) * 16.0f;
+            mid.x += jxRoad;
+            mid.y += jzRoad;
+            bool highway = (poi.category == PoiCategory::CitadelKeep && pois_[bestIdx].category == PoiCategory::CitadelKeep);
+            addCurvedRoad(pA, mid, pB, highway);
+        }
+
+        if (h > 3.2f && m > 0.42f && (bHash % 3u == 0u)) {
+            float kEps = 1.0f;
+            float hGradX = (rawElevationAt(pox + kEps, poz) - h) / kEps;
+            float hGradZ = (rawElevationAt(pox, poz + kEps) - h) / kEps;
+            float gLen = std::sqrt(hGradX * hGradX + hGradZ * hGradZ);
+            if (gLen > 0.05f) {
+                Vec2f flow{-hGradX / gLen, -hGradZ / gLen};
+                Vec2f rStart{pox, poz};
+                Vec2f rMid{pox + flow.x * 18.0f, poz + flow.y * 18.0f};
+                Vec2f rMouth{pox + flow.x * 38.0f, poz + flow.y * 38.0f};
+                addWindingRiver(rStart, rMid, rMouth, 0.85f, 2.0f);
+            }
+        }
+    }
+}
+
+ChartFieldSample VoronoiAtlas::sampleAtKnown(
+    float worldX, float worldZ,
+    float hC, float mC,
+    float gradX, float gradZ,
+    float hOff, float mOff
+) const noexcept {
+    ChartFieldSample s{};
+    s.gradX = gradX;
+    s.gradZ = gradZ;
+
+    // 1. Evaluate River spline distance and carve river channels (with AABB culling)
+    float minRiverDist = 100.0f;
+    float activeRiverWidth = 1.0f;
+    for (const auto& rv : rivers_) {
+        float minX = std::min(rv.p0.x, rv.p1.x) - 6.0f;
+        float maxX = std::max(rv.p0.x, rv.p1.x) + 6.0f;
+        if (worldX < minX || worldX > maxX) continue;
+        float minZ = std::min(rv.p0.y, rv.p1.y) - 6.0f;
+        float maxZ = std::max(rv.p0.y, rv.p1.y) + 6.0f;
+        if (worldZ < minZ || worldZ > maxZ) continue;
+
+        float t = 0.0f;
+        float d = pointToSegmentDist({worldX, worldZ}, rv.p0, rv.p1, t);
+        float w = rv.width0 + (rv.width1 - rv.width0) * t;
+        if (d - w < minRiverDist - activeRiverWidth) {
+            minRiverDist = d;
+            activeRiverWidth = w;
+        }
+    }
+    s.sdfRiver = minRiverDist;
+    s.riverWidth = activeRiverWidth;
+
+    if (hC > 0.0f && minRiverDist < activeRiverWidth * 2.4f) {
+        float carve = std::max(0.0f, 1.0f - (minRiverDist / (activeRiverWidth * 2.4f)));
+        hC -= carve * carve * 0.85f;
+    }
+
+    // 2. Evaluate Road spline distance & bridge crossings (with AABB culling)
+    float minRoadDist = 100.0f;
+    float bestRoadArc = 0.0f;
+    bool isHighway = false;
+    for (const auto& rd : roads_) {
+        float minX = std::min(rd.p0.x, rd.p1.x) - 5.0f;
+        float maxX = std::max(rd.p0.x, rd.p1.x) + 5.0f;
+        if (worldX < minX || worldX > maxX) continue;
+        float minZ = std::min(rd.p0.y, rd.p1.y) - 5.0f;
+        float maxZ = std::max(rd.p0.y, rd.p1.y) + 5.0f;
+        if (worldZ < minZ || worldZ > maxZ) continue;
+
+        float t = 0.0f;
+        float d = pointToSegmentDist({worldX, worldZ}, rd.p0, rd.p1, t);
+        if (d < minRoadDist) {
+            minRoadDist = d;
+            bestRoadArc = rd.arcStart + (rd.arcEnd - rd.arcStart) * t;
+            isHighway   = rd.isRoyalHighway;
+        }
+    }
+    s.sdfRoad = minRoadDist;
+    s.roadArc = isHighway ? bestRoadArc : -bestRoadArc;
+
+    // Flatten terrain slightly under settlements (with AABB culling)
+    for (const auto& p : pois_) {
+        float dx = worldX - p.pos.x;
+        if (std::abs(dx) > 6.0f) continue;
+        float dz = worldZ - p.pos.y;
+        if (std::abs(dz) > 6.0f) continue;
+        float d  = std::sqrt(dx * dx + dz * dz);
+        if (d < 5.5f && (p.category == PoiCategory::CitadelKeep ||
+                         p.category == PoiCategory::PortHarbor ||
+                         p.category == PoiCategory::MarketHamlet)) {
+            s.flags |= ChartFlags::IsSettlement;
+        }
+    }
+
+    // 3. Compute signed coastline distance (sdfCoast)
+    float gradMag = std::sqrt(s.gradX * s.gradX + s.gradZ * s.gradZ);
+    float metricScale = 1.0f / std::clamp(gradMag, 0.14f, 0.55f);
+    s.sdfCoast = hC * metricScale * 2.2f;
+
+    if (hC <= 0.0f) {
+        s.elevation = 0.0f;
+        s.flags |= ChartFlags::IsWater;
+    } else {
+        // Authentic Sorcery! 3D Parchment Relief Elevation Scaling:
+        // Diverse tiered terrain: low coastal beaches -> gentle rolling meadows/mounds ->
+        // terraced plateaus -> soaring alpine mountain crags & jagged ridges
+        float baseH = hC;
+        float hScaled = 0.0f;
+        if (baseH < 1.2f) {
+            // Gentle coastal incline from sea level (0.0m to 0.75m)
+            float t = baseH / 1.2f;
+            hScaled = t * t * 0.75f;
+        } else if (baseH < 3.8f) {
+            // Sorcery! rolling green mounds & plains (0.75m to 3.2m)
+            float t = (baseH - 1.2f) / 2.6f;
+            hScaled = 0.75f + (t * (2.0f - t)) * 2.45f;
+        } else if (baseH < 5.4f) {
+            // Stepped plateaus, badlands & foothills (3.2m to 5.8m)
+            float t = (baseH - 3.8f) / 1.6f;
+            hScaled = 3.20f + t * 2.60f;
+        } else {
+            // Soaring alpine peaks & rugged mountain crags (5.8m to 10.5m)
+            float t = (baseH - 5.4f);
+            hScaled = 5.80f + t * 2.10f + std::pow(std::max(0.0f, t), 1.25f) * 0.85f;
+        }
+
+        // River valley carving: rivers flow through naturally carved valleys
+        if (minRiverDist < activeRiverWidth * 2.8f) {
+            float rNorm = minRiverDist / (activeRiverWidth * 2.8f);
+            float riverCarve = (1.0f - rNorm * rNorm) * std::min(1.4f, hScaled * 0.45f);
+            hScaled = std::max(0.12f, hScaled - riverCarve);
+        }
+
+        s.elevation = hScaled;
+    }
+
+    if (minRoadDist < 1.35f && minRiverDist < activeRiverWidth * 1.25f && s.sdfCoast > -1.0f) {
+        s.flags |= ChartFlags::IsBridge;
+        s.elevation = std::max(s.elevation, 0.45f);
+    }
+
+    // 4. Biome classification & watercolor edge-darkening blend
+    uint32_t cellSeed = hashU32(static_cast<uint32_t>(std::floor(worldX * 0.1f)) * 73u +
+                                static_cast<uint32_t>(std::floor(worldZ * 0.1f)) * 199u + seed_);
+    s.biomePrimary = classifyBiome(hC, mC, std::abs(s.sdfCoast), cellSeed);
+    s.biomeSecondary = classifyBiome(hOff, mOff, std::abs(s.sdfCoast), cellSeed);
+    s.biomeBlend = (s.biomePrimary != s.biomeSecondary) ? 0.85f : 0.15f;
+
+    return s;
+}
+
+ChartFieldSample VoronoiAtlas::sampleAt(float worldX, float worldZ) const noexcept {
     if (preset_ == AtlasPreset::OnePageDungeon) {
+        ChartFieldSample s{};
         // Evaluate signed distance to carved One-Page Dungeon rooms & corridors
         float minSignedDist = 100.0f; // < 0 inside room floor, > 0 in hatched stone wall
         bool inMoatRoom = false;
@@ -435,10 +770,9 @@ ChartFieldSample VoronoiAtlas::sampleAt(float worldX, float worldZ) const noexce
         if (minSignedDist <= 0.0f) {
             // Inside carved flagstone room
             s.elevation = 0.25f;
-            s.sdfCoast  = -minSignedDist; // Distance from room wall!
+            s.sdfCoast  = -minSignedDist;
             s.biomePrimary   = BiomeId::DungeonFlagstone;
             s.biomeSecondary = BiomeId::DungeonFlagstone;
-            // Optional central water pool in the Pillared Great Hall
             if (inMoatRoom && std::abs(worldX) > 5.5f && std::abs(worldX) < 12.5f &&
                 worldZ > 1.5f && worldZ < 10.5f) {
                 s.elevation = -0.35f;
@@ -447,7 +781,6 @@ ChartFieldSample VoronoiAtlas::sampleAt(float worldX, float worldZ) const noexce
                 s.biomePrimary = BiomeId::CoastalShoals;
             }
         } else {
-            // Raised cross-hatched solid rock perimeter (Watabou's signature hatched dungeon walls)
             s.elevation = 1.45f;
             s.sdfCoast  = -minSignedDist;
             s.biomePrimary   = BiomeId::DungeonHatchedWall;
@@ -457,96 +790,18 @@ ChartFieldSample VoronoiAtlas::sampleAt(float worldX, float worldZ) const noexce
         return s;
     }
 
-    // 1. Evaluate continuous elevation and analytical finite-difference slope gradient (∇h)
     constexpr float kEps = 0.65f;
     float hC = rawElevationAt(worldX, worldZ);
     float hX = rawElevationAt(worldX + kEps, worldZ);
     float hZ = rawElevationAt(worldX, worldZ + kEps);
-    s.gradX = (hX - hC) / kEps;
-    s.gradZ = (hZ - hC) / kEps;
+    float gradX = (hX - hC) / kEps;
+    float gradZ = (hZ - hC) / kEps;
 
-    // 2. Evaluate River spline distance and carve river channels
-    float minRiverDist = 100.0f;
-    float activeRiverWidth = 1.0f;
-    for (const auto& rv : rivers_) {
-        float t = 0.0f;
-        float d = pointToSegmentDist({worldX, worldZ}, rv.p0, rv.p1, t);
-        float w = rv.width0 + (rv.width1 - rv.width0) * t;
-        if (d - w < minRiverDist - activeRiverWidth) {
-            minRiverDist = d;
-            activeRiverWidth = w;
-        }
-    }
-    s.sdfRiver = minRiverDist;
-    s.riverWidth = activeRiverWidth;
-
-    if (hC > 0.0f && minRiverDist < activeRiverWidth * 2.4f) {
-        float carve = std::max(0.0f, 1.0f - (minRiverDist / (activeRiverWidth * 2.4f)));
-        hC -= carve * carve * 0.85f;
-    }
-
-    // 3. Evaluate Road spline distance & bridge crossings
-    float minRoadDist = 100.0f;
-    float bestRoadArc = 0.0f;
-    bool isHighway = false;
-    for (const auto& rd : roads_) {
-        float t = 0.0f;
-        float d = pointToSegmentDist({worldX, worldZ}, rd.p0, rd.p1, t);
-        if (d < minRoadDist) {
-            minRoadDist = d;
-            bestRoadArc = rd.arcStart + (rd.arcEnd - rd.arcStart) * t;
-            isHighway   = rd.isRoyalHighway;
-        }
-    }
-    s.sdfRoad = minRoadDist;
-    s.roadArc = isHighway ? bestRoadArc : -bestRoadArc; // sign encodes highway vs dashed trail
-
-    // Flatten terrain slightly under settlements
-    for (const auto& p : pois_) {
-        float dx = worldX - p.pos.x;
-        float dz = worldZ - p.pos.y;
-        float d  = std::sqrt(dx * dx + dz * dz);
-        if (d < 5.5f && (p.category == PoiCategory::CitadelKeep ||
-                         p.category == PoiCategory::PortHarbor ||
-                         p.category == PoiCategory::MarketHamlet)) {
-            s.flags |= ChartFlags::IsSettlement;
-        }
-    }
-
-    // 4. Compute signed coastline distance (sdfCoast)
-    // Scale elevation near shoreline by local gradient to obtain accurate metric distance for concentric water-lining rings
-    float gradMag = std::sqrt(s.gradX * s.gradX + s.gradZ * s.gradZ);
-    float metricScale = 1.0f / std::clamp(gradMag, 0.14f, 0.55f);
-    s.sdfCoast = hC * metricScale * 2.2f;
-
-    // Tabletop height compression: keep land gently sculpted so 2.5D standees & map typography pop cleanly
-    if (hC <= 0.0f) {
-        s.elevation = 0.0f;
-        s.flags |= ChartFlags::IsWater;
-    } else {
-        // Gentle tabletop relief (0.0m at beach up to ~5.2m on alpine peaks)
-        s.elevation = std::pow(hC * 0.35f, 1.12f);
-    }
-
-    // Check if road crosses a river -> flag as Bridge!
-    if (minRoadDist < 1.35f && minRiverDist < activeRiverWidth * 1.25f && s.sdfCoast > -1.0f) {
-        s.flags |= ChartFlags::IsBridge;
-        s.elevation = std::max(s.elevation, 0.32f);
-    }
-
-    // 5. Biome classification & watercolor edge-darkening blend
-    float moisture = rawMoistureAt(worldX, worldZ);
-    uint32_t cellSeed = hashU32(static_cast<uint32_t>(std::floor(worldX * 0.1f)) * 73u +
-                                static_cast<uint32_t>(std::floor(worldZ * 0.1f)) * 199u + seed_);
-    s.biomePrimary = classifyBiome(hC, moisture, std::abs(s.sdfCoast), cellSeed);
-
-    // Sample slightly offset point to detect biome transitions for watercolor pigment edge-pooling
+    float mC = rawMoistureAt(worldX, worldZ);
     float mOff = rawMoistureAt(worldX + 2.8f, worldZ - 2.4f);
     float hOff = rawElevationAt(worldX + 2.8f, worldZ - 2.4f);
-    s.biomeSecondary = classifyBiome(hOff, mOff, std::abs(s.sdfCoast), cellSeed);
-    s.biomeBlend = (s.biomePrimary != s.biomeSecondary) ? 0.85f : 0.15f;
 
-    return s;
+    return sampleAtKnown(worldX, worldZ, hC, mC, gradX, gradZ, hOff, mOff);
 }
 
 } // namespace eatscharted

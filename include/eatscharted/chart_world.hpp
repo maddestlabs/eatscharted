@@ -8,8 +8,19 @@
 #include <vector>
 #include <string>
 #include <cstdint>
+#include <unordered_map>
 
 namespace eatscharted {
+
+struct MapChunk {
+    int cx{0};
+    int cz{0};
+    float discovery{0.0f}; // 0.0 = uncharted vellum, 1.0 = fully charted watercolor
+    std::vector<ChartVertex> terrainVerts;
+    std::vector<ChartVertex> bannerVerts;
+    std::vector<StandeeInstance> standees;
+    std::vector<PointLight> lights;
+};
 
 struct ChartStats {
     float atlasGenTimeMs{0.0f};
@@ -30,6 +41,8 @@ struct HeroState {
     float dodgeCooldown{0.0f};
     float attackTimer{0.0f};
     float spellTimer{0.0f};
+    float hopTimer{0.0f};           // Movement cycle accumulator (~6 Hz hopping animation)
+    float hopArc{0.0f};             // Current vertical bounce displacement factor (0.0 to 1.0)
     int level{1};
     int hp{120};
     int maxHp{120};
@@ -91,7 +104,16 @@ public:
     void generateCustomChart(uint32_t seed, AtlasPreset preset);
 
     // Rebuilds the 3D tabletop parchment mesh, 3D curved calligraphic banners, and static standees
-    ChartStats rebuildWorldGeometry();
+    ChartStats rebuildWorldGeometry(float centerWorldX = 0.0f, float centerWorldZ = 0.0f);
+
+    // Dynamic streaming mesh dirty state for WebGPU buffer uploads
+    [[nodiscard]] bool needsMeshUpload() const noexcept { return meshDirty_; }
+    void clearMeshDirty() noexcept { meshDirty_ = false; }
+    [[nodiscard]] Vec2f gridCenter() const noexcept { return gridCenter_; }
+    [[nodiscard]] int activeChunkX() const noexcept { return activeChunkX_; }
+    [[nodiscard]] int activeChunkZ() const noexcept { return activeChunkZ_; }
+    void fillDiscoveryGrid(int centerCx, int centerCz, float outGrid[16][4]) const noexcept;
+    [[nodiscard]] uint32_t discoveredChunkCount() const noexcept;
 
     // Updates dynamic standees (hero, companion, ships, enemies, slash arcs), telegraphs, and 2D HUD
     void updateSimulation(float dt, uint32_t viewportW, uint32_t viewportH);
@@ -126,16 +148,36 @@ public:
     [[nodiscard]] float timeOfDay() const noexcept { return atmosphere_.timeOfDay; }
     [[nodiscard]] bool useDayNightCycle() const noexcept { return useDayNightCycle_; }
     void setUseDayNightCycle(bool enable) noexcept { useDayNightCycle_ = enable; }
+    [[nodiscard]] float dayCycleSpeed() const noexcept { return dayCycleSpeed_; }
+    void setDayCycleSpeed(float speed) noexcept { dayCycleSpeed_ = speed; }
+
+    static constexpr float kChunkSize{32.0f};
+    static constexpr int kChunkRadius{2}; // 5x5 chunk grid = 160m x 160m active window (25 chunks)
 
     void addCustomStandee(Vec3f pos, float w, float h, uint16_t layer, uint32_t flags = StandeeFlags::PopUpTilt);
     void addCustomBanner(const std::string& text, Vec2f p0, Vec2f p1, Vec2f p2, float letterSize = 2.2f);
     void addPointLight(Vec3f pos, float radius, Vec3f color, float intensity);
 
 private:
-    void bakeCurvedMapBannersToMesh();
-    void populateProceduralStandeesAndEnemies();
+    void updateChunkStreaming(float heroX, float heroZ, bool forceRebuild = false);
+    void servicePendingChunkBakes();
+    void assembleActiveMesh();
+    MapChunk bakeChunk(int cx, int cz);
+    void emitBannerToChunk(const CurvedMapBanner& b, std::vector<ChartVertex>& outVerts,
+                           float minX, float maxX, float minZ, float maxZ);
+
+    int activeChunkX_{-999999};
+    int activeChunkZ_{-999999};
+    int targetChunkX_{-999999};
+    int targetChunkZ_{-999999};
+    std::vector<std::pair<int, int>> pendingBakeChunks_;
+    std::unordered_map<uint64_t, MapChunk> chunkCache_;
+
     void buildDynamicStandeesAndTelegraphs();
     void buildHudAndMapOverlay(uint32_t viewportW, uint32_t viewportH);
+
+    Vec2f gridCenter_{0.0f, 0.0f};
+    bool meshDirty_{false};
 
     VoronoiAtlas voronoi_;
     InkAtlasData inkAtlas_;
@@ -150,7 +192,10 @@ private:
     std::vector<StandeeInstance> activeStandees_;
     std::vector<CombatTelegraph> activeTelegraphs_;
     std::vector<PointLight> pointLights_;
+    std::vector<PointLight> staticChunkLights_;
+    std::vector<PointLight> customPointLights_;
     std::vector<CurvedMapBanner> customBanners_;
+    std::vector<StandeeInstance> customStandees_;
 
     HeroState hero_;
     std::vector<EnemyAgent> enemies_;
@@ -158,7 +203,8 @@ private:
 
     CameraConfig camera_;
     AtmosphereConfig atmosphere_;
-    bool useDayNightCycle_{false};
+    bool useDayNightCycle_{true};
+    float dayCycleSpeed_{1.0f / 180.0f}; // 1 full cycle per 3 minutes (180 seconds)
     float simTimeSec_{0.0f};
     uint32_t overworldReturnSeed_{1492u};
     AtlasPreset overworldReturnPreset_{AtlasPreset::PerilousPeninsula};
