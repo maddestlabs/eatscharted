@@ -375,7 +375,7 @@ fn sampleShadowPCF(worldPos : vec3<f32>) -> f32 {
     for (var y = -1; y <= 1; y = y + 1) {
         for (var x = -1; x <= 1; x = x + 1) {
             let offset = vec2<f32>(f32(x), f32(y)) * texel;
-            sum += textureSampleCompare(shadowMap, shadowSampler, shadowUV + offset, depthRef);
+            sum += textureSampleCompareLevel(shadowMap, shadowSampler, shadowUV + offset, depthRef);
         }
     }
     return sum / 9.0;
@@ -1301,15 +1301,18 @@ fn vs_overlay2d(@builtin(vertex_index) vertexIndex : u32) -> OverlayVSOut {
 
 @fragment
 fn fs_overlay2d(in : OverlayVSOut) -> @location(0) vec4<f32> {
+    let q = abs(in.localPos) - in.halfSize + vec2<f32>(in.radius, in.radius);
+    let boxDist = length(max(q, vec2<f32>(0.0, 0.0))) + min(max(q.x, q.y), 0.0) - in.radius;
+    let boxFw = max(fwidth(boxDist), 0.70);
+    let lineDist = abs(in.localPos.x) - in.radius;
+    let lineFw = max(fwidth(lineDist), 0.70);
+
     if (in.mode == 2u) {
         // Analytical Rounded Rectangle / Box with 4x Rotated-Grid Supersampled Subpixel Coverage (RGSS 4x)
-        let q = abs(in.localPos) - in.halfSize + vec2<f32>(in.radius, in.radius);
-        let dist = length(max(q, vec2<f32>(0.0, 0.0))) + min(max(q.x, q.y), 0.0) - in.radius;
-        let fw = max(fwidth(dist), 0.70);
-        let s0 = clamp(0.5 - (dist + 0.375 * fw - 0.125 * fw) / fw, 0.0, 1.0);
-        let s1 = clamp(0.5 - (dist - 0.125 * fw - 0.375 * fw) / fw, 0.0, 1.0);
-        let s2 = clamp(0.5 - (dist + 0.125 * fw + 0.375 * fw) / fw, 0.0, 1.0);
-        let s3 = clamp(0.5 - (dist - 0.375 * fw + 0.125 * fw) / fw, 0.0, 1.0);
+        let s0 = clamp(0.5 - (boxDist + 0.375 * boxFw - 0.125 * boxFw) / boxFw, 0.0, 1.0);
+        let s1 = clamp(0.5 - (boxDist - 0.125 * boxFw - 0.375 * boxFw) / boxFw, 0.0, 1.0);
+        let s2 = clamp(0.5 - (boxDist + 0.125 * boxFw + 0.375 * boxFw) / boxFw, 0.0, 1.0);
+        let s3 = clamp(0.5 - (boxDist - 0.375 * boxFw + 0.125 * boxFw) / boxFw, 0.0, 1.0);
         let alpha = (s0 + s1 + s2 + s3) * 0.25;
         if (alpha <= 0.001) {
             discard;
@@ -1317,12 +1320,10 @@ fn fs_overlay2d(in : OverlayVSOut) -> @location(0) vec4<f32> {
         return vec4<f32>(in.color.rgb, in.color.a * alpha);
     } else if (in.mode == 6u) {
         // Analytical 4x Antialiased Vector Line Stroke (Eatsbits subpixel coverage)
-        let dist = abs(in.localPos.x) - in.radius;
-        let fw = max(fwidth(dist), 0.70);
-        let s0 = clamp(0.5 - (dist + 0.375 * fw - 0.125 * fw) / fw, 0.0, 1.0);
-        let s1 = clamp(0.5 - (dist - 0.125 * fw - 0.375 * fw) / fw, 0.0, 1.0);
-        let s2 = clamp(0.5 - (dist + 0.125 * fw + 0.375 * fw) / fw, 0.0, 1.0);
-        let s3 = clamp(0.5 - (dist - 0.375 * fw + 0.125 * fw) / fw, 0.0, 1.0);
+        let s0 = clamp(0.5 - (lineDist + 0.375 * lineFw - 0.125 * lineFw) / lineFw, 0.0, 1.0);
+        let s1 = clamp(0.5 - (lineDist - 0.125 * lineFw - 0.375 * lineFw) / lineFw, 0.0, 1.0);
+        let s2 = clamp(0.5 - (lineDist + 0.125 * lineFw + 0.375 * lineFw) / lineFw, 0.0, 1.0);
+        let s3 = clamp(0.5 - (lineDist - 0.375 * lineFw + 0.125 * lineFw) / lineFw, 0.0, 1.0);
         let alpha = (s0 + s1 + s2 + s3) * 0.25;
         if (alpha <= 0.001) {
             discard;
