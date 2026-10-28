@@ -1014,12 +1014,14 @@ void ChartWorld::buildDynamicStandeesAndTelegraphs() {
     heroSt.worldPos[2] = hero_.pos.z;
 
     if (hero_.isSailing) {
-        heroSt.worldPos[1] = hero_.pos.y + std::sin(simTimeSec_ * 2.2f) * 0.08f;
-        heroSt.width       = 2.8f;
-        heroSt.height      = 2.9f;
+        // Authentically grounded in water: draft offset seats the bottom of the hull below the water plane,
+        // so the 3D water surface naturally intersects the hull timbers without exposing the keel.
+        heroSt.worldPos[1] = hero_.pos.y - 0.38f + std::sin(simTimeSec_ * 1.6f) * 0.05f;
+        heroSt.width       = 3.2f;
+        heroSt.height      = 3.2f;
         heroSt.texLayer    = InkLayer::StandeeShipCaravel;
-        heroSt.flags       = StandeeFlags::IdleBob | StandeeFlags::PopUpTilt | (hero_.facingRight ? 0u : StandeeFlags::FlipX);
-        heroSt.phaseOffset = simTimeSec_ * 3.0f;
+        heroSt.flags       = StandeeFlags::WindSway | StandeeFlags::PopUpTilt | (hero_.facingRight ? 0u : StandeeFlags::FlipX);
+        heroSt.phaseOffset = simTimeSec_ * 1.5f;
     } else {
         // Cat Quest hopping bounce on land (tamed subtle step-hop)
         float hopY = hero_.hopArc * 0.18f;
@@ -1038,7 +1040,7 @@ void ChartWorld::buildDynamicStandeesAndTelegraphs() {
     // 4. Floating Companion Spirit Standee
     StandeeInstance compSt{};
     compSt.worldPos[0] = hero_.pos.x - (hero_.facingRight ? 1.5f : -1.5f);
-    compSt.worldPos[1] = hero_.pos.y + 0.8f + std::sin(simTimeSec_ * 3.2f) * 0.22f;
+    compSt.worldPos[1] = hero_.pos.y + (hero_.isSailing ? 1.4f : 0.8f) + std::sin(simTimeSec_ * 3.2f) * 0.22f;
     compSt.worldPos[2] = hero_.pos.z + 0.6f;
     compSt.width       = 1.3f;
     compSt.height      = 1.3f;

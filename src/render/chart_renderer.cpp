@@ -256,7 +256,13 @@ fn vs_shadow_sprite(@builtin(vertex_index) vertexIndex : u32) -> StandeeShadowOu
 
 @fragment
 fn fs_shadow_sprite(in : StandeeShadowOut) {
-    let texCoord = clamp(vec2<i32>(in.uv * 64.0), vec2<i32>(0, 0), vec2<i32>(63, 63));
+    var animUV = in.uv;
+    if (in.texLayer == 27u && animUV.y < 0.22 && animUV.x > 0.51 && animUV.x < 0.76) {
+        let flagDist = (animUV.x - 0.51) / 0.25;
+        let wave = sin(u.camPos.w * 9.5 - animUV.x * 26.0) * (0.024 * flagDist);
+        animUV.y += wave;
+    }
+    let texCoord = clamp(vec2<i32>(animUV * 64.0), vec2<i32>(0, 0), vec2<i32>(63, 63));
     let sampleCol = textureLoad(albedoAtlas, texCoord, i32(in.texLayer), 0);
     if (sampleCol.a < 0.5) {
         discard;
@@ -954,8 +960,15 @@ fn vs_sprite(@builtin(vertex_index) vertexIndex : u32) -> StandeeVSOut {
 
 @fragment
 fn fs_sprite(in : StandeeVSOut) -> @location(0) vec4<f32> {
-    let fw = fwidth(in.uv);
-    let crispUV = computeCrispUV(in.uv, fw);
+    var animUV = in.uv;
+    // Performant cloth ripple for Caravel masthead pennant/flag in maritime breeze
+    if (in.texLayer == 27u && animUV.y < 0.22 && animUV.x > 0.51 && animUV.x < 0.76) {
+        let flagDist = (animUV.x - 0.51) / 0.25;
+        let wave = sin(u.camPos.w * 9.5 - animUV.x * 26.0) * (0.024 * flagDist);
+        animUV.y += wave;
+    }
+    let fw = fwidth(animUV);
+    let crispUV = computeCrispUV(animUV, fw);
     let albedo = textureSampleLevel(albedoAtlas, atlasSampler, crispUV, i32(in.texLayer), 0.0);
     if (albedo.a < 0.5) {
         discard;
@@ -2632,11 +2645,11 @@ static void renderSingleFrame(ChartLoopContext& l) {
 
     // Scene preset switching (1, 2, 3, 4)
     bool k1 = glfwGetKey(l.window, GLFW_KEY_1) == GLFW_PRESS;
-    if (k1 && !l.was1) switchChartScene(l, "scenes/perilous_shores.eats");
+    if (k1 && !l.was1) switchChartScene(l, "scenes/shattered_isles.eats");
     l.was1 = k1;
 
     bool k2 = glfwGetKey(l.window, GLFW_KEY_2) == GLFW_PRESS;
-    if (k2 && !l.was2) switchChartScene(l, "scenes/shattered_isles.eats");
+    if (k2 && !l.was2) switchChartScene(l, "scenes/perilous_shores.eats");
     l.was2 = k2;
 
     bool k3 = glfwGetKey(l.window, GLFW_KEY_3) == GLFW_PRESS;
@@ -2851,7 +2864,7 @@ int ChartRenderer::runInteractiveWindow(
               << "  T                       : Toggle Dynamic Day/Night Cycle\n"
               << "  [ / ]                   : Step Time of Day (-1 hr / +1 hr)\n"
               << "  M / Z or Scroll Wheel   : Zoom-to-Atlas Cartographic View\n"
-              << "  1 / 2 / 3 / 4           : Switch Chart (1: Perilous Shores, 2: Shattered Isles,\n"
+              << "  1 / 2 / 3 / 4           : Switch Chart (1: Shattered Isles [Corsair's Haven], 2: Perilous Shores,\n"
               << "                            3: Highland Kingdom, 4: Sunken Sanctum Dungeon)\n"
               << "====================================================================\n\n";
 

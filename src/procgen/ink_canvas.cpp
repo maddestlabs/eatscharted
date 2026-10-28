@@ -565,6 +565,7 @@ void synthSettlementStandee(LayerSlice& s, int kind) {
 }
 
 #include "hero_sprite_data.inl"
+#include "ship_sprite_data.inl"
 
 // Synthesizes Cat Quest Hero, Companion, Sailing Caravel, Monsters & Dungeon Portals
 void synthCharacterOrPropStandee(LayerSlice& s, uint16_t layer) {
@@ -598,20 +599,41 @@ void synthCharacterOrPropStandee(LayerSlice& s, uint16_t layer) {
         s.fillCircle(32.0f, 30.0f, 9.0f, RGBA8{110, 205, 255, 255}, 0.9f, 0.85f);
         s.fillCircle(32.0f, 30.0f, 5.0f, RGBA8{245, 250, 255, 255}, 0.95f, 1.0f);
     } else if (layer == InkLayer::StandeeShipCaravel) {
-        // Hand-inked Nautical Caravel Ship with Billowing Sails
-        // Wooden hull
-        for (int y = 42; y <= 58; ++y) {
-            int shrink = (y - 42) / 2;
-            s.fillRect(12 + shrink, y, 52 - shrink, y, RGBA8{134, 88, 52, 255}, 0.7f);
+        // High-Fidelity Hand-Inked Antique Caravel Flagship
+        // Billowing parchment sails, heraldic cross, quarterdeck cat captain, glowing stern lantern & submerged waterline keel
+        for (int y = 0; y < kS; ++y) {
+            for (int x = 0; x < kS; ++x) {
+                uint32_t p = kShipSpriteData[y * kS + x];
+                uint8_t a = static_cast<uint8_t>((p >> 24) & 0xFF);
+                if (a < 32) continue;
+                uint8_t r = static_cast<uint8_t>((p >> 16) & 0xFF);
+                uint8_t g = static_cast<uint8_t>((p >>  8) & 0xFF);
+                uint8_t b = static_cast<uint8_t>( p        & 0xFF);
+                float h = 0.55f;
+                float em = 0.0f;
+
+                // 1. Radiant Aft Stern Lantern (Warm amber/gold light casts beacon across water)
+                if (x >= 7 && x <= 11 && y >= 39 && y <= 42 && r > 240 && g > 160) {
+                    h = 0.95f;
+                    em = 1.0f;
+                }
+                // 2. Billowing Canvas Sails (3D curved dome relief so sunlight catches wind belly)
+                else if (y >= 20 && y <= 42 && (r > 170 && g > 150 && b > 120)) {
+                    float sailDome = 1.0f - std::abs((x - 32.0f) / 14.0f);
+                    h = 0.70f + std::clamp(sailDome, 0.0f, 1.0f) * 0.22f;
+                }
+                // 3. Golden Cat Figurehead & Brass Rivets
+                else if (r > 200 && g > 150 && b < 100 && y >= 42 && y <= 48) {
+                    h = 0.82f;
+                }
+                // 4. Wooden Hull Planking & Keel
+                else if (y >= 44) {
+                    h = (y >= 57) ? 0.45f : 0.62f;
+                }
+
+                s.setPixel(x, y, RGBA8{r, g, b, a}, h, em);
+            }
         }
-        // Mast
-        s.fillRect(31, 8, 33, 44, kInkDark, 0.6f);
-        // Billowing main parchment sail with red paw/cross emblem
-        s.fillCircle(34.0f, 26.0f, 14.0f, kPaperCream, 0.88f);
-        s.fillRect(32, 18, 36, 34, RGBA8{196, 52, 48, 255}, 0.9f);
-        s.fillRect(26, 24, 42, 28, RGBA8{196, 52, 48, 255}, 0.9f);
-        // Pennant flag at top
-        s.fillRect(33, 8, 46, 12, RGBA8{196, 52, 48, 255}, 0.85f);
     } else if (layer == InkLayer::StandeeDungeonArch) {
         // Skull Dungeon Fort Emblem (like Fort Of The Undead-One & Shattered Palace in reference!)
         // Outer stone archway

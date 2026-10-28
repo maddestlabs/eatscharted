@@ -49,8 +49,8 @@ It synthesizes:
 - **`[` / `]`:** Step Time of Day backward / forward by 1 hour (adjust sun angle and hatch drop shadows)
 - **`M` / `Z`:** Toggle **Zoom-to-Atlas** mode (smoothly transitions between the 2.5D action camera and a high-altitude *Perilous Shores* cartographic map view)
 - **`1 / 2 / 3 / 4`:** Switch Chart Recipe:
-  - `1`: `scenes/perilous_shores.eats` (*The Perilous Shores* Peninsula, Bay & Barrier Islands)
-  - `2`: `scenes/shattered_isles.eats` (*The Shattered Sea* Nautical Archipelago)
+  - `1`: `scenes/shattered_isles.eats` (*The Shattered Isles* - Corsair's Haven & Naval Archipelago)
+  - `2`: `scenes/perilous_shores.eats` (*The Perilous Shores* Peninsula, Bay & Barrier Islands)
   - `3`: `scenes/highland_kingdom.eats` (*Silvervale Realm* Twin-Ridge River Valley)
   - `4`: `scenes/sunken_sanctum_dungeon.eats` (*The Sunken Sanctum* Cross-Hatched One-Page Dungeon)
 
