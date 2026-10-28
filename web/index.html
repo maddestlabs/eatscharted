@@ -148,12 +148,12 @@
             color: #f87171 !important;
         }
 
-        /* Top Bar System */
+        /* Top Bar System (Single-Row Minimal-First Layout) */
         .top-bar {
             position: absolute;
-            top: calc(12px + env(safe-area-inset-top, 0px));
-            left: calc(14px + env(safe-area-inset-left, 0px));
-            right: calc(14px + env(safe-area-inset-right, 0px));
+            top: calc(10px + env(safe-area-inset-top, 0px));
+            left: calc(12px + env(safe-area-inset-left, 0px));
+            right: calc(12px + env(safe-area-inset-right, 0px));
             display: flex;
             justify-content: space-between;
             align-items: center;
@@ -166,29 +166,110 @@
             pointer-events: auto;
         }
 
-        .webgpu-badge {
-            background: rgba(26, 20, 14, 0.86);
-            border: 1px solid rgba(212, 175, 55, 0.28);
-            backdrop-filter: blur(12px);
-            border-radius: 999px;
-            padding: 6px 13px;
+        .top-right-cluster {
             display: flex;
             align-items: center;
-            gap: 8px;
+            gap: 6px;
+            min-width: 0;
+        }
+
+        /* Compact Hero Status Pill (Minimal Mode Default, Tap to Expand Ledger) */
+        .hero-status-pill {
+            background: rgba(26, 20, 14, 0.88);
+            border: 1px solid rgba(212, 175, 55, 0.34);
+            backdrop-filter: blur(14px);
+            border-radius: 999px;
+            padding: 5px 11px;
+            display: flex;
+            align-items: center;
+            gap: 7px;
             font-family: 'JetBrains Mono', monospace;
-            font-size: 0.73rem;
-            color: #f5ebd6;
-            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+            font-size: 0.72rem;
+            color: #fef3c7;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+            cursor: pointer;
+            outline: none;
+            transition: all 0.2s ease;
             white-space: nowrap;
+            flex-shrink: 0;
+        }
+
+        .hero-status-pill:hover, .hero-status-pill:active {
+            background: rgba(42, 31, 20, 0.94);
+            border-color: rgba(245, 158, 11, 0.65);
+        }
+
+        .hero-status-pill.expanded {
+            background: rgba(180, 83, 9, 0.28);
+            border-color: rgba(251, 191, 36, 0.75);
+            box-shadow: 0 0 16px rgba(245, 158, 11, 0.3);
         }
 
         .badge-dot {
-            width: 8px;
-            height: 8px;
+            width: 7px;
+            height: 7px;
             border-radius: 50%;
             background-color: #10b981;
             box-shadow: 0 0 8px #10b981;
             flex-shrink: 0;
+        }
+
+        .hero-hp-mini {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .hp-bar-track {
+            width: 46px;
+            height: 6px;
+            background: rgba(0, 0, 0, 0.6);
+            border: 1px solid rgba(248, 113, 113, 0.48);
+            border-radius: 999px;
+            overflow: hidden;
+        }
+
+        .hp-bar-fill {
+            height: 100%;
+            width: 100%;
+            background: linear-gradient(90deg, #dc2626, #f87171);
+            border-radius: 999px;
+            transition: width 0.2s ease;
+        }
+
+        .hp-text {
+            color: #fca5a5;
+            font-size: 0.70rem;
+            font-weight: 600;
+        }
+
+        .hero-lv-tag {
+            color: #fde68a;
+            font-weight: 600;
+            font-size: 0.69rem;
+            padding-left: 4px;
+            border-left: 1px solid rgba(212, 175, 55, 0.25);
+        }
+
+        .hero-mode-icon {
+            font-size: 0.80rem;
+            line-height: 1;
+            display: none;
+        }
+
+        .hero-mode-icon.active {
+            display: inline-block;
+        }
+
+        .hero-pill-caret {
+            font-size: 0.66rem;
+            color: #cbb89d;
+            transition: transform 0.22s ease;
+        }
+
+        .hero-status-pill.expanded .hero-pill-caret {
+            transform: rotate(180deg);
+            color: #fde047;
         }
 
         .time-controller {
@@ -196,22 +277,22 @@
             border: 1px solid rgba(212, 175, 55, 0.30);
             backdrop-filter: blur(14px);
             border-radius: 999px;
-            padding: 5px 13px;
+            padding: 5px 12px;
             display: flex;
             align-items: center;
-            gap: 9px;
+            gap: 8px;
             box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
         }
 
         .time-icon {
-            font-size: 0.95rem;
+            font-size: 0.92rem;
             line-height: 1;
         }
 
         .time-slider {
             -webkit-appearance: none;
             appearance: none;
-            width: 104px;
+            width: 96px;
             height: 5px;
             background: linear-gradient(90deg, #1e1b4b 0%, #f59e0b 26%, #38bdf8 50%, #ea580c 75%, #1e1b4b 100%);
             border-radius: 999px;
@@ -233,21 +314,26 @@
 
         .time-badge {
             font-family: 'JetBrains Mono', monospace;
-            font-size: 0.71rem;
+            font-size: 0.70rem;
             font-weight: 600;
             color: #fef3c7;
-            min-width: 92px;
             text-align: center;
-            letter-spacing: 0.03em;
+            letter-spacing: 0.02em;
+            white-space: nowrap;
+        }
+
+        .time-period-desktop {
+            color: #d6c7b2;
+            font-weight: 400;
         }
 
         .time-play-btn {
             background: rgba(255, 245, 220, 0.08);
             border: 1px solid rgba(212, 175, 55, 0.25);
             border-radius: 999px;
-            padding: 3px 10px;
+            padding: 3px 9px;
             font-family: 'Outfit', sans-serif;
-            font-size: 0.70rem;
+            font-size: 0.69rem;
             font-weight: 600;
             color: #e2d5be;
             cursor: pointer;
@@ -272,7 +358,7 @@
         .scene-nav-cluster {
             display: flex;
             align-items: center;
-            gap: 4px;
+            gap: 3px;
             background: rgba(26, 20, 14, 0.88);
             border: 1px solid rgba(212, 175, 55, 0.30);
             backdrop-filter: blur(14px);
@@ -286,8 +372,8 @@
             border: none;
             color: #cbb89d;
             font-size: 1rem;
-            width: 28px;
-            height: 28px;
+            width: 26px;
+            height: 26px;
             border-radius: 50%;
             display: flex;
             align-items: center;
@@ -306,15 +392,15 @@
             background: rgba(180, 83, 9, 0.28);
             border: 1px solid rgba(245, 158, 11, 0.50);
             border-radius: 999px;
-            padding: 5px 12px;
+            padding: 4px 11px;
             font-family: 'Outfit', sans-serif;
-            font-size: 0.78rem;
+            font-size: 0.76rem;
             font-weight: 600;
             color: #fef3c7;
             cursor: pointer;
             display: flex;
             align-items: center;
-            gap: 7px;
+            gap: 6px;
             transition: all 0.2s ease;
             outline: none;
             white-space: nowrap;
@@ -327,29 +413,44 @@
         }
 
         .scene-active-pill .pill-caret {
-            font-size: 0.70rem;
+            font-size: 0.68rem;
             color: #d6c7b2;
         }
 
-        /* Diegetic Cartographic Region & Hero Status Ribbon */
+        /* Collapsible Cartographer's Ledger (Hidden by Default, Expands on Tap) */
         .chart-hud-ribbon {
             position: absolute;
-            top: calc(56px + env(safe-area-inset-top, 0px));
-            left: 50%;
-            transform: translateX(-50%);
-            width: min(740px, calc(100vw - 24px));
-            background: linear-gradient(180deg, rgba(32, 24, 16, 0.88) 0%, rgba(22, 17, 11, 0.92) 100%);
-            border: 1.5px solid rgba(212, 175, 55, 0.55);
-            border-radius: 12px;
-            padding: 7px 14px;
+            top: calc(50px + env(safe-area-inset-top, 0px));
+            left: calc(12px + env(safe-area-inset-left, 0px));
+            width: min(520px, calc(100vw - 24px));
+            background: linear-gradient(180deg, rgba(30, 22, 14, 0.94) 0%, rgba(20, 15, 10, 0.96) 100%);
+            border: 1.5px solid rgba(212, 175, 55, 0.52);
+            border-radius: 14px;
+            padding: 10px 14px;
+            display: flex;
+            flex-direction: column;
+            gap: 9px;
+            z-index: 95;
+            pointer-events: none;
+            opacity: 0;
+            transform: translateY(-8px) scale(0.97);
+            transform-origin: top left;
+            transition: opacity 0.2s ease, transform 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+            backdrop-filter: blur(16px);
+            box-shadow: 0 14px 34px rgba(0, 0, 0, 0.68), inset 0 1px 0 rgba(254, 243, 199, 0.16);
+        }
+
+        .chart-hud-ribbon.open {
+            opacity: 1;
+            pointer-events: auto;
+            transform: translateY(0) scale(1);
+        }
+
+        .ledger-main-row {
             display: flex;
             align-items: center;
             justify-content: space-between;
-            gap: 12px;
-            z-index: 80;
-            pointer-events: none;
-            backdrop-filter: blur(10px);
-            box-shadow: 0 10px 28px rgba(0, 0, 0, 0.55), inset 0 1px 0 rgba(254, 243, 199, 0.15);
+            gap: 10px;
         }
 
         .ribbon-region {
@@ -361,12 +462,12 @@
         .ribbon-region-title-row {
             display: flex;
             align-items: center;
-            gap: 8px;
+            gap: 7px;
         }
 
         .ribbon-region-name {
             font-family: 'Cinzel', serif;
-            font-size: 0.92rem;
+            font-size: 0.90rem;
             font-weight: 700;
             letter-spacing: 0.06em;
             color: #fef3c7;
@@ -377,7 +478,7 @@
 
         .ribbon-mode-tag {
             font-family: 'JetBrains Mono', monospace;
-            font-size: 0.62rem;
+            font-size: 0.60rem;
             font-weight: 600;
             padding: 1px 6px;
             border-radius: 999px;
@@ -403,7 +504,7 @@
         }
 
         .ribbon-region-sub {
-            font-size: 0.70rem;
+            font-size: 0.69rem;
             color: #cbb89d;
             white-space: nowrap;
             overflow: hidden;
@@ -413,7 +514,7 @@
         .ribbon-stats {
             display: flex;
             align-items: center;
-            gap: 10px;
+            gap: 9px;
             flex-shrink: 0;
             font-family: 'JetBrains Mono', monospace;
             font-size: 0.72rem;
@@ -422,38 +523,94 @@
         .stat-pill {
             display: flex;
             align-items: center;
-            gap: 5px;
+            gap: 4px;
             color: #fde68a;
             font-weight: 600;
+            background: rgba(255, 248, 231, 0.06);
+            border: 1px solid rgba(212, 175, 55, 0.22);
+            padding: 3px 8px;
+            border-radius: 8px;
         }
 
-        .hp-bar-wrap {
+        /* Mobile Sundial Scrubber Row inside Expanded Ledger */
+        .ledger-time-row {
+            display: none;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            padding-top: 8px;
+            border-top: 1px solid rgba(212, 175, 55, 0.20);
+        }
+
+        .ledger-time-Row-left {
             display: flex;
             align-items: center;
-            gap: 6px;
+            gap: 8px;
+            flex: 1;
+            min-width: 0;
         }
 
-        .hp-bar-track {
-            width: 68px;
-            height: 7px;
-            background: rgba(0, 0, 0, 0.55);
-            border: 1px solid rgba(248, 113, 113, 0.45);
+        .ledger-time-Row-left .time-slider {
+            flex: 1;
+            width: auto;
+        }
+
+        /* Ephemeral Region Discovery Toast (Cat Quest / BotW Style) */
+        .region-discovery-toast {
+            position: absolute;
+            top: calc(56px + env(safe-area-inset-top, 0px));
+            left: 50%;
+            transform: translateX(-50%) translateY(-6px);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            pointer-events: none;
+            z-index: 75;
+            opacity: 0;
+            transition: opacity 0.45s ease, transform 0.45s cubic-bezier(0.16, 1, 0.3, 1);
+            text-align: center;
+        }
+
+        .region-discovery-toast.visible {
+            opacity: 1;
+            transform: translateX(-50%) translateY(0);
+        }
+
+        .toast-title-wrap {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            background: rgba(20, 15, 10, 0.72);
+            border: 1px solid rgba(212, 175, 55, 0.42);
+            backdrop-filter: blur(8px);
+            padding: 4px 16px;
             border-radius: 999px;
-            overflow: hidden;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
         }
 
-        .hp-bar-fill {
-            height: 100%;
-            width: 100%;
-            background: linear-gradient(90deg, #dc2626, #f87171);
-            border-radius: 999px;
-            transition: width 0.2s ease;
+        .toast-flourish {
+            color: rgba(245, 158, 11, 0.75);
+            font-size: 0.7rem;
         }
 
-        .hp-text {
-            color: #fca5a5;
-            font-size: 0.70rem;
-            font-weight: 600;
+        .toast-region-name {
+            font-family: 'Cinzel', serif;
+            font-size: 0.86rem;
+            font-weight: 700;
+            letter-spacing: 0.12em;
+            color: #fef3c7;
+            text-shadow: 0 2px 8px rgba(0, 0, 0, 0.85);
+            white-space: nowrap;
+        }
+
+        .toast-region-sub {
+            margin-top: 2px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.62rem;
+            letter-spacing: 0.08em;
+            color: #fde68a;
+            text-shadow: 0 1px 6px rgba(0, 0, 0, 0.95);
+            text-transform: uppercase;
         }
 
         /* Scene Drawer / Sheet */
@@ -646,7 +803,7 @@
         /* Touch Zones */
         .touch-zone {
             position: absolute;
-            top: 96px;
+            top: 52px;
             bottom: 0;
             pointer-events: auto;
             touch-action: none;
@@ -881,24 +1038,46 @@
                 right: calc(10px + env(safe-area-inset-right, 0px));
             }
 
-            .webgpu-badge span {
+            .time-controller .time-slider,
+            .time-controller .time-period-desktop,
+            .time-controller .time-play-btn {
                 display: none;
             }
-            .webgpu-badge {
-                padding: 6px 8px;
+
+            .time-controller {
+                padding: 5px 10px;
+                gap: 5px;
+                cursor: pointer;
             }
 
-            .time-slider {
-                width: 72px;
+            .scene-step-btn {
+                display: none;
             }
-            .time-badge {
-                min-width: 74px;
-                font-size: 0.67rem;
+
+            .scene-nav-cluster {
+                padding: 0;
+                border: none;
+                background: transparent;
+                box-shadow: none;
+            }
+
+            .scene-active-pill {
+                background: rgba(26, 20, 14, 0.88);
+                border: 1px solid rgba(212, 175, 55, 0.34);
+                padding: 5px 11px;
+                font-size: 0.74rem;
             }
 
             .chart-hud-ribbon {
-                top: calc(48px + env(safe-area-inset-top, 0px));
-                padding: 6px 12px;
+                top: calc(46px + env(safe-area-inset-top, 0px));
+                left: calc(10px + env(safe-area-inset-left, 0px));
+                right: calc(10px + env(safe-area-inset-right, 0px));
+                width: auto;
+                padding: 10px 12px;
+            }
+
+            .ledger-time-row {
+                display: flex;
             }
 
             .controls-hud {
@@ -916,26 +1095,17 @@
             }
         }
 
-        @media (max-width: 560px) {
-            .time-slider {
-                display: none;
+        @media (max-width: 480px) {
+            .hp-bar-track {
+                width: 38px;
             }
-            .time-controller {
-                padding: 4px 10px;
-                gap: 6px;
+            .hero-status-pill {
+                padding: 5px 9px;
+                gap: 5px;
             }
             .scene-active-pill {
-                padding: 4px 10px;
-                font-size: 0.74rem;
-            }
-            .ribbon-region-sub {
-                display: none;
-            }
-            .chart-hud-ribbon {
-                padding: 5px 10px;
-            }
-            .hp-bar-track {
-                width: 48px;
+                padding: 5px 9px;
+                font-size: 0.72rem;
             }
         }
     </style>
@@ -956,52 +1126,81 @@
             </div>
         </div>
 
-        <!-- Top Navigation Bar -->
+        <!-- Single-Row Top Bar (Minimal by Default) -->
         <header class="top-bar">
-            <div class="webgpu-badge" id="gpu-badge">
-                <div class="badge-dot"></div>
-                <span>WebGPU Active</span>
-            </div>
-
-            <div class="time-controller" id="time-controller">
-                <span class="time-icon" id="time-icon">☀️</span>
-                <input type="range" class="time-slider" id="time-slider" min="0" max="1" step="0.002" value="0.36" title="Drag to adjust Sun/Moon Watch (24h)">
-                <span class="time-badge" id="time-badge">08:38 [Morning]</span>
-                <button class="time-play-btn active" id="time-play-btn" onclick="toggleTimeProgression()">⏸ Auto</button>
-            </div>
-
-            <!-- Unified Chart Selector Pill -->
-            <div class="scene-nav-cluster">
-                <button class="scene-step-btn" id="btn-scene-prev" onclick="cycleScene(-1)" title="Previous Chart">‹</button>
-                <button class="scene-active-pill" id="scene-active-trigger" onclick="toggleSceneDrawer(true)">
-                    <span id="scene-pill-icon">🧭</span>
-                    <span id="scene-pill-name">Perilous Shores</span>
-                    <span class="pill-caret">▾</span>
-                </button>
-                <button class="scene-step-btn" id="btn-scene-next" onclick="cycleScene(1)" title="Next Chart">›</button>
-            </div>
-        </header>
-
-        <!-- Live Cartographic Region & Cat Quest Hero Status Ribbon -->
-        <div class="chart-hud-ribbon" id="chart-hud-ribbon">
-            <div class="ribbon-region">
-                <div class="ribbon-region-title-row">
-                    <span class="ribbon-region-name" id="hud-region-name">PORT PAWVEN</span>
-                    <span class="ribbon-mode-tag" id="hud-mode-tag">⛵ SAILING</span>
-                </div>
-                <div class="ribbon-region-sub" id="hud-region-sub">Royal Cartographer's Harbor</div>
-            </div>
-            <div class="ribbon-stats">
-                <span class="stat-pill" id="hud-level">LV.1</span>
-                <div class="hp-bar-wrap">
+            <!-- Left: Compact Hero Pill (Tap to Expand/Collapse Full Stats Ledger) -->
+            <button class="hero-status-pill" id="hero-status-pill" onclick="toggleStatsLedger()" title="Tap to toggle full Cartographer's Stats Ledger">
+                <div class="badge-dot" id="gpu-dot"></div>
+                <div class="hero-hp-mini">
+                    <span>❤️</span>
                     <div class="hp-bar-track">
                         <div class="hp-bar-fill" id="hud-hp-fill"></div>
                     </div>
-                    <span class="hp-text" id="hud-hp-text">120/120</span>
+                    <span class="hp-text" id="hud-hp-compact">120</span>
                 </div>
-                <span class="stat-pill" id="hud-gold">🪙 50</span>
-                <span class="stat-pill" id="hud-charted">📜 9</span>
+                <span class="hero-lv-tag" id="hud-level">LV.1</span>
+                <span class="hero-mode-icon" id="hud-mode-compact">⛵</span>
+                <span class="hero-pill-caret" id="hero-pill-caret">▾</span>
+            </button>
+
+            <!-- Right: Compact Sundial + Chart Drawer Trigger -->
+            <div class="top-right-cluster">
+                <div class="time-controller" id="time-controller" onclick="onTimeControllerTap(event)" title="Sun/Moon Watch (Tap on mobile to scrub time)">
+                    <span class="time-icon" id="time-icon">☀️</span>
+                    <input type="range" class="time-slider" id="time-slider" min="0" max="1" step="0.002" value="0.36" onclick="event.stopPropagation()" title="Drag to adjust Sun/Moon Watch (24h)">
+                    <span class="time-badge" id="time-badge"><span id="time-hhmm">08:38</span><span class="time-period-desktop" id="time-period-desktop"> [Morning]</span></span>
+                    <button class="time-play-btn active" id="time-play-btn" onclick="event.stopPropagation(); toggleTimeProgression()">⏸ Auto</button>
+                </div>
+
+                <!-- Unified Chart Selector Pill -->
+                <div class="scene-nav-cluster">
+                    <button class="scene-step-btn" id="btn-scene-prev" onclick="cycleScene(-1)" title="Previous Chart">‹</button>
+                    <button class="scene-active-pill" id="scene-active-trigger" onclick="toggleSceneDrawer(true)">
+                        <span id="scene-pill-icon">🧭</span>
+                        <span id="scene-pill-name">Perilous Shores</span>
+                        <span class="pill-caret">▾</span>
+                    </button>
+                    <button class="scene-step-btn" id="btn-scene-next" onclick="cycleScene(1)" title="Next Chart">›</button>
+                </div>
             </div>
+        </header>
+
+        <!-- Collapsible Cartographer's Stats & Sundial Ledger (Hidden by Default, Expands on Tap) -->
+        <div class="chart-hud-ribbon" id="chart-hud-ribbon">
+            <div class="ledger-main-row">
+                <div class="ribbon-region">
+                    <div class="ribbon-region-title-row">
+                        <span class="ribbon-region-name" id="hud-region-name">LOWMILLBURG</span>
+                        <span class="ribbon-mode-tag" id="hud-mode-tag">⛵ SAILING</span>
+                    </div>
+                    <div class="ribbon-region-sub" id="hud-region-sub">Kildland Realm</div>
+                </div>
+                <div class="ribbon-stats">
+                    <span class="stat-pill" id="hud-hp-full" style="color:#fca5a5;">❤️ 120/120</span>
+                    <span class="stat-pill" id="hud-gold">🪙 50</span>
+                    <span class="stat-pill" id="hud-charted">📜 9</span>
+                </div>
+            </div>
+
+            <!-- Mobile Sundial Scrubber Row -->
+            <div class="ledger-time-row">
+                <div class="ledger-time-Row-left">
+                    <span class="time-icon" id="time-icon-mobile">☀️</span>
+                    <input type="range" class="time-slider" id="time-slider-mobile" min="0" max="1" step="0.002" value="0.36">
+                    <span class="time-badge" id="time-badge-mobile" style="min-width:96px;text-align:right;">08:38 Morning</span>
+                </div>
+                <button class="time-play-btn active" id="time-play-btn-mobile" onclick="toggleTimeProgression()">⏸ Auto</button>
+            </div>
+        </div>
+
+        <!-- Ephemeral Region Discovery Toast (Appears for 2.2s on Region Entry when Ledger is Collapsed) -->
+        <div class="region-discovery-toast" id="region-discovery-toast">
+            <div class="toast-title-wrap">
+                <span class="toast-flourish">✦</span>
+                <span class="toast-region-name" id="toast-region-name">LOWMILLBURG</span>
+                <span class="toast-flourish">✦</span>
+            </div>
+            <div class="toast-region-sub" id="toast-region-sub">Kildland Realm</div>
         </div>
 
         <!-- Slide-Up Chart Switcher Drawer (Mobile & Tablet) -->
@@ -1098,7 +1297,49 @@
         // -------------------------------------------------------------
         const canvasElem = document.getElementById('canvas');
         const statusText = document.getElementById('status-text');
-        const badge = document.getElementById('gpu-badge');
+        const gpuDot = document.getElementById('gpu-dot');
+        let statsLedgerOpen = false;
+        let lastToastRegion = '';
+        let toastTimeoutId = null;
+
+        window.toggleStatsLedger = function(forceState) {
+            const ribbon = document.getElementById('chart-hud-ribbon');
+            const pill = document.getElementById('hero-status-pill');
+            if (!ribbon || !pill) return;
+            statsLedgerOpen = (forceState !== undefined) ? Boolean(forceState) : !statsLedgerOpen;
+            if (statsLedgerOpen) {
+                ribbon.classList.add('open');
+                pill.classList.add('expanded');
+                const toast = document.getElementById('region-discovery-toast');
+                if (toast) toast.classList.remove('visible');
+            } else {
+                ribbon.classList.remove('open');
+                pill.classList.remove('expanded');
+            }
+        };
+
+        window.onTimeControllerTap = function(evt) {
+            if (window.innerWidth <= 860) {
+                toggleStatsLedger();
+            }
+        };
+
+        function showRegionDiscoveryToast(regName, regSub) {
+            if (!regName || statsLedgerOpen) return;
+            const toast = document.getElementById('region-discovery-toast');
+            const tName = document.getElementById('toast-region-name');
+            const tSub = document.getElementById('toast-region-sub');
+            if (!toast || !tName || !tSub) return;
+
+            tName.innerText = regName;
+            tSub.innerText = regSub || '';
+            toast.classList.add('visible');
+
+            if (toastTimeoutId) clearTimeout(toastTimeoutId);
+            toastTimeoutId = setTimeout(function() {
+                toast.classList.remove('visible');
+            }, 2200);
+        }
 
         window.hideAppLoadingScreen = function() {
             const loader = document.getElementById('app-loading-screen');
@@ -1231,37 +1472,53 @@
             const period = getTimePeriod(frac);
             const hStr = (hours < 10 ? '0' : '') + hours;
             const mStr = (mins < 10 ? '0' : '') + mins;
-            const tBadge = document.getElementById('time-badge');
-            if (tBadge) tBadge.innerText = hStr + ':' + mStr + ' [' + period.name + ']';
+
+            const tHhmm = document.getElementById('time-hhmm');
+            if (tHhmm) tHhmm.innerText = hStr + ':' + mStr;
+            const tPerDesk = document.getElementById('time-period-desktop');
+            if (tPerDesk) tPerDesk.innerText = ' [' + period.name + ']';
+
             const icon = document.getElementById('time-icon');
             if (icon) icon.innerText = period.icon;
+            const iconMob = document.getElementById('time-icon-mobile');
+            if (iconMob) iconMob.innerText = period.icon;
+
+            const tBadgeMob = document.getElementById('time-badge-mobile');
+            if (tBadgeMob) tBadgeMob.innerText = hStr + ':' + mStr + ' ' + period.name;
+
             const slider = document.getElementById('time-slider');
             if (slider && Math.abs(parseFloat(slider.value) - frac) > 0.003 && document.activeElement !== slider) {
                 slider.value = frac;
+            }
+            const sliderMob = document.getElementById('time-slider-mobile');
+            if (sliderMob && Math.abs(parseFloat(sliderMob.value) - frac) > 0.003 && document.activeElement !== sliderMob) {
+                sliderMob.value = frac;
             }
         };
 
         window.toggleTimeProgression = function() {
             const btn = document.getElementById('time-play-btn');
+            const btnMob = document.getElementById('time-play-btn-mobile');
             if (typeof Module !== 'undefined' && Module.ccall) {
                 try {
                     const playing = Module.ccall('eatscharted_toggle_time_progression', 'number', [], []);
-                    if (btn) {
+                    [btn, btnMob].forEach(function(b) {
+                        if (!b) return;
                         if (playing) {
-                            btn.classList.add('active');
-                            btn.innerText = '⏸ Auto';
+                            b.classList.add('active');
+                            b.innerText = '⏸ Auto';
                         } else {
-                            btn.classList.remove('active');
-                            btn.innerText = '▶ Auto';
+                            b.classList.remove('active');
+                            b.innerText = '▶ Auto';
                         }
-                    }
+                    });
                 } catch (e) {}
             }
         };
 
-        const timeSlider = document.getElementById('time-slider');
-        if (timeSlider) {
-            timeSlider.addEventListener('input', function(e) {
+        function bindTimeSlider(sliderElem) {
+            if (!sliderElem) return;
+            sliderElem.addEventListener('input', function(e) {
                 const val = parseFloat(e.target.value);
                 if (typeof Module !== 'undefined' && Module.ccall) {
                     try {
@@ -1271,6 +1528,8 @@
                 updateTimeUI(val);
             });
         }
+        bindTimeSlider(document.getElementById('time-slider'));
+        bindTimeSlider(document.getElementById('time-slider-mobile'));
 
         function pollHudTelemetry() {
             if (typeof Module === 'undefined' || !Module.ccall) return;
@@ -1288,6 +1547,11 @@
                 const regName = Module.ccall('eatscharted_get_region_name', 'string', [], []);
                 const regSub = Module.ccall('eatscharted_get_region_sub', 'string', [], []);
 
+                if (regName && regName !== lastToastRegion) {
+                    lastToastRegion = regName;
+                    showRegionDiscoveryToast(regName, regSub);
+                }
+
                 const elName = document.getElementById('hud-region-name');
                 if (elName && regName) elName.innerText = regName;
 
@@ -1295,6 +1559,7 @@
                 if (elSub && regSub) elSub.innerText = regSub;
 
                 const elMode = document.getElementById('hud-mode-tag');
+                const elModeCompact = document.getElementById('hud-mode-compact');
                 if (elMode) {
                     if (dungeon) {
                         elMode.className = 'ribbon-mode-tag dungeon';
@@ -1306,6 +1571,17 @@
                         elMode.className = 'ribbon-mode-tag';
                     }
                 }
+                if (elModeCompact) {
+                    if (dungeon) {
+                        elModeCompact.className = 'hero-mode-icon active';
+                        elModeCompact.innerText = '🗝️';
+                    } else if (sailing) {
+                        elModeCompact.className = 'hero-mode-icon active';
+                        elModeCompact.innerText = '⛵';
+                    } else {
+                        elModeCompact.className = 'hero-mode-icon';
+                    }
+                }
 
                 const elLv = document.getElementById('hud-level');
                 if (elLv) elLv.innerText = 'LV.' + lv;
@@ -1313,8 +1589,11 @@
                 const elHpFill = document.getElementById('hud-hp-fill');
                 if (elHpFill) elHpFill.style.width = Math.min(100, Math.max(0, (hp / maxHp) * 100)).toFixed(1) + '%';
 
-                const elHpText = document.getElementById('hud-hp-text');
-                if (elHpText) elHpText.innerText = hp + '/' + maxHp;
+                const elHpCompact = document.getElementById('hud-hp-compact');
+                if (elHpCompact) elHpCompact.innerText = hp;
+
+                const elHpFull = document.getElementById('hud-hp-full');
+                if (elHpFull) elHpFull.innerText = '❤️ ' + hp + '/' + maxHp;
 
                 const elGold = document.getElementById('hud-gold');
                 if (elGold) elGold.innerText = '🪙 ' + gold;
@@ -1662,7 +1941,10 @@
                 return null;
             });
         } else {
-            badge.innerHTML = '<div class="badge-dot" style="background:#ef4444;box-shadow:0 0 8px #ef4444;"></div><span>WebGPU Unsupported</span>';
+            if (gpuDot) {
+                gpuDot.style.background = '#ef4444';
+                gpuDot.style.boxShadow = '0 0 8px #ef4444';
+            }
             statusText.className = 'status-text error';
             statusText.innerText = 'WebGPU is not supported in this browser. Please enable WebGPU in Chrome, Edge, or Safari 18+ on iOS.';
         }
