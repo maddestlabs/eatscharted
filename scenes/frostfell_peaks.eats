@@ -1,0 +1,9 @@
+# Eatscharted Scene Recipe: The Frostfell Reach & Glacial Expanse
+# Generates deep azure glacial ice sheets, procedurally fractured ice crevasses,
+# frost-rimed snowy tundra with windblown sastrugi drifts, permafrost ground polygons,
+# jagged alpine ice horns, frost-pine valleys, and frozen landmark keeps.
+
+chart.clear()
+chart.build_frostfell_peaks(seed=1845)
+chart.set_hero_pos(x=-24.0, z=-14.0)
+

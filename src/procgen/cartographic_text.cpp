@@ -56,10 +56,19 @@ struct MeshPen {
             return;
         }
 
+        float baseH = std::max(0.0f, atlas.sampleAt(center.x, center.y).elevation);
         float gy0 = std::max(0.0f, atlas.sampleAt(c0.x, c0.y).elevation);
         float gy1 = std::max(0.0f, atlas.sampleAt(c1.x, c1.y).elevation);
         float gy2 = std::max(0.0f, atlas.sampleAt(c2.x, c2.y).elevation);
         float gy3 = std::max(0.0f, atlas.sampleAt(c3.x, c3.y).elevation);
+
+        // Stabilize intra-glyph elevation to prevent letters from shearing down cliffs:
+        // A single character quad (at most ~2m wide) should never span more than +/- 0.45m vertically.
+        constexpr float kMaxGlyphShear = 0.45f;
+        gy0 = std::clamp(gy0, baseH - kMaxGlyphShear, baseH + kMaxGlyphShear);
+        gy1 = std::clamp(gy1, baseH - kMaxGlyphShear, baseH + kMaxGlyphShear);
+        gy2 = std::clamp(gy2, baseH - kMaxGlyphShear, baseH + kMaxGlyphShear);
+        gy3 = std::clamp(gy3, baseH - kMaxGlyphShear, baseH + kMaxGlyphShear);
 
         auto buildVert = [](Vec2f p, float gy, float yOff, uint32_t col) noexcept -> ChartVertex {
             ChartVertex v{};
@@ -453,6 +462,205 @@ std::vector<PathPoint> CartographicPathText::generateBezierPath(Vec2f p0, Vec2f 
     return pts;
 }
 
+TextFitResult CartographicPathText::fitBanner(
+    const std::string& text,
+    Vec2f anchorPos,
+    float targetLetterSize,
+    const VoronoiAtlas& atlas,
+    const std::vector<CurvedMapBanner>& existingBanners,
+    bool isWaterTitle,
+    bool isRegionHeader
+) {
+    TextFitResult bestResult{};
+    if (text.empty()) {
+        bestResult.fitsValidly = false;
+        return bestResult;
+    }
+
+    // 1. Measure text width with kerning
+    float letterH = std::clamp(targetLetterSize, 1.2f, 4.5f);
+    float charWTotal = 0.0f;
+    float kerning = letterH * 0.16f;
+    for (size_t i = 0; i < text.size(); ++i) {
+        charWTotal += getGlyphWidth(text[i], letterH);
+        if (i + 1 < text.size()) charWTotal += kerning;
+    }
+    float baseHalfSpan = std::max(10.0f, charWTotal * 0.58f);
+
+    // 2. Sample terrain gradient at anchor to find contour line
+    float eps = 2.0f;
+    float hE = atlas.sampleAt(anchorPos.x + eps, anchorPos.y).elevation;
+    float hW = atlas.sampleAt(anchorPos.x - eps, anchorPos.y).elevation;
+    float hS = atlas.sampleAt(anchorPos.x, anchorPos.y + eps).elevation;
+    float hN = atlas.sampleAt(anchorPos.x, anchorPos.y - eps).elevation;
+    float dhdx = (hE - hW) / (2.0f * eps);
+    float dhdz = (hS - hN) / (2.0f * eps);
+    float gradLen = std::sqrt(dhdx * dhdx + dhdz * dhdz);
+
+    Vec2f contourDir{1.0f, 0.0f};
+    if (gradLen > 0.08f) {
+        contourDir = {-dhdz / gradLen, dhdx / gradLen};
+        if (contourDir.x < 0.0f) {
+            contourDir = {-contourDir.x, -contourDir.y};
+        }
+    }
+
+    struct Candidate {
+        Vec2f p0, p1, p2;
+        float letterSize;
+        float scale;
+    };
+
+    std::vector<Candidate> candidates;
+    candidates.reserve(24);
+
+    auto addCandidate = [&](Vec2f center, Vec2f dir, float halfSpan, float sagitta, float lSize, float scale) {
+        Vec2f perp{-dir.y, dir.x};
+        Vec2f p0 = center - dir * halfSpan;
+        Vec2f p2 = center + dir * halfSpan;
+        Vec2f p1 = center + perp * sagitta;
+        candidates.push_back({p0, p1, p2, lSize, scale});
+    };
+
+    const float scales[] = {1.0f, 0.82f, 0.68f};
+
+    for (float sc : scales) {
+        float span = baseHalfSpan * sc;
+        float curSize = letterH * sc;
+
+        // Candidate A: Front camera-facing concave arc south of anchor
+        addCandidate({anchorPos.x, anchorPos.y - 4.8f}, {1.0f, 0.0f}, span, -2.4f, curSize, sc);
+
+        // Candidate B: Further south apron (gentler terrain)
+        addCandidate({anchorPos.x, anchorPos.y - 9.0f}, {1.0f, 0.0f}, span, -2.4f, curSize, sc);
+
+        // Candidate C: North of anchor (if south side is a cliff drop)
+        addCandidate({anchorPos.x, anchorPos.y + 6.0f}, {1.0f, 0.0f}, span, 2.0f, curSize, sc);
+
+        // Candidate D: Contour-aligned curve (follows flat mountain terrace)
+        if (gradLen > 0.15f && contourDir.x > 0.60f) {
+            Vec2f downhill{-dhdx / gradLen, -dhdz / gradLen};
+            Vec2f terracePos = anchorPos + downhill * 3.5f;
+            addCandidate(terracePos, contourDir, span, -1.8f, curSize, sc);
+            Vec2f terracePosUp = anchorPos - downhill * 3.5f;
+            addCandidate(terracePosUp, contourDir, span, -1.8f, curSize, sc);
+        }
+
+        // Candidate E: Direct center (for water titles / region headers)
+        if (isWaterTitle || isRegionHeader) {
+            addCandidate(anchorPos, {1.0f, 0.0f}, span, -2.5f, curSize, sc);
+        }
+    }
+
+    float bestPenalty = 1e9f;
+    Candidate bestCand = candidates.front();
+
+    for (const auto& cand : candidates) {
+        float penalty = 0.0f;
+        penalty += (1.0f - cand.scale) * 25.0f;
+
+        constexpr int kSamples = 7;
+        float minH = 1e9f, maxH = -1e9f;
+        bool hasWaterViolation = false;
+        bool hasCliffStep = false;
+        float prevH = 0.0f;
+
+        Vec2f samplePts[kSamples];
+        for (int i = 0; i < kSamples; ++i) {
+            float t = static_cast<float>(i) / static_cast<float>(kSamples - 1);
+            float invT = 1.0f - t;
+            Vec2f pt{
+                invT * invT * cand.p0.x + 2.0f * invT * t * cand.p1.x + t * t * cand.p2.x,
+                invT * invT * cand.p0.y + 2.0f * invT * t * cand.p1.y + t * t * cand.p2.y
+            };
+            samplePts[i] = pt;
+
+            float elev = std::max(0.0f, atlas.sampleAt(pt.x, pt.y).elevation);
+            minH = std::min(minH, elev);
+            maxH = std::max(maxH, elev);
+
+            if (!isWaterTitle && elev < 0.12f) {
+                hasWaterViolation = true;
+            }
+            if (isWaterTitle && elev > 0.45f) {
+                hasWaterViolation = true;
+            }
+
+            if (i > 0) {
+                float step = std::abs(elev - prevH);
+                if (step > 1.4f) {
+                    hasCliffStep = true;
+                }
+            }
+            prevH = elev;
+        }
+
+        float deltaH = maxH - minH;
+        if (deltaH > 2.2f) {
+            penalty += (deltaH - 2.2f) * 70.0f;
+        }
+        if (hasCliffStep) {
+            penalty += 150.0f;
+        }
+        if (hasWaterViolation) {
+            penalty += 400.0f;
+        }
+
+        // Collision check against existing banners
+        for (const auto& ex : existingBanners) {
+            float bMinX = std::min({ex.p0.x, ex.p1.x, ex.p2.x}) - 12.0f;
+            float bMaxX = std::max({ex.p0.x, ex.p1.x, ex.p2.x}) + 12.0f;
+            float bMinZ = std::min({ex.p0.y, ex.p1.y, ex.p2.y}) - 12.0f;
+            float bMaxZ = std::max({ex.p0.y, ex.p1.y, ex.p2.y}) + 12.0f;
+
+            float candMinX = std::min({cand.p0.x, cand.p1.x, cand.p2.x});
+            float candMaxX = std::max({cand.p0.x, cand.p1.x, cand.p2.x});
+            float candMinZ = std::min({cand.p0.y, cand.p1.y, cand.p2.y});
+            float candMaxZ = std::max({cand.p0.y, cand.p1.y, cand.p2.y});
+            if (candMinX > bMaxX || candMaxX < bMinX || candMinZ > bMaxZ || candMaxZ < bMinZ) continue;
+
+            float clearDist = (cand.letterSize + ex.letterSize) * 1.15f + 2.5f;
+            float clearDistSq = clearDist * clearDist;
+
+            for (int j = 0; j < 5; ++j) {
+                float tj = static_cast<float>(j) / 4.0f;
+                float invTj = 1.0f - tj;
+                Vec2f ept{
+                    invTj * invTj * ex.p0.x + 2.0f * invTj * tj * ex.p1.x + tj * tj * ex.p2.x,
+                    invTj * invTj * ex.p0.y + 2.0f * invTj * tj * ex.p1.y + tj * tj * ex.p2.y
+                };
+
+                for (int i = 0; i < kSamples; ++i) {
+                    float dx = samplePts[i].x - ept.x;
+                    float dz = samplePts[i].y - ept.y;
+                    float distSq = dx * dx + dz * dz;
+                    if (distSq < clearDistSq) {
+                        float dist = std::sqrt(distSq);
+                        penalty += (clearDist - dist) * 120.0f;
+                    }
+                }
+            }
+        }
+
+        if (penalty < bestPenalty) {
+            bestPenalty = penalty;
+            bestCand = cand;
+            bestResult.elevationVariance = deltaH;
+        }
+    }
+
+    bestResult.banner.text = text;
+    bestResult.banner.p0 = bestCand.p0;
+    bestResult.banner.p1 = bestCand.p1;
+    bestResult.banner.p2 = bestCand.p2;
+    bestResult.banner.letterSize = bestCand.letterSize;
+    bestResult.banner.isRegionHeader = isRegionHeader;
+    bestResult.banner.isWaterTitle = isWaterTitle;
+    bestResult.fitsValidly = !text.empty();
+
+    return bestResult;
+}
+
 void CartographicPathText::emitTextAlongPath(
     const std::string& text,
     const std::vector<PathPoint>& path,
@@ -484,6 +692,23 @@ void CartographicPathText::emitTextAlongPath(
         totalTextLen += charWidths[i];
         if (i + 1 < text.size()) {
             totalTextLen += kerning;
+        }
+    }
+
+    // Auto-fit scaling: if text length exceeds the available curve length,
+    // scale letter height down so the entire locale name fits comfortably along the path.
+    float maxAllowedLen = totalPathLen * 0.92f;
+    if (totalTextLen > maxAllowedLen && totalTextLen > 1e-4f) {
+        float fitScale = maxAllowedLen / totalTextLen;
+        letterHeight = std::max(1.1f, letterHeight * fitScale);
+        kerning = letterHeight * 0.16f;
+        totalTextLen = 0.0f;
+        for (size_t i = 0; i < text.size(); ++i) {
+            charWidths[i] = getGlyphWidth(text[i], letterHeight);
+            totalTextLen += charWidths[i];
+            if (i + 1 < text.size()) {
+                totalTextLen += kerning;
+            }
         }
     }
 
@@ -537,6 +762,11 @@ void CartographicPathText::emitTextAlongPath(
         curDist += cw + kerning;
 
         if (ch == ' ') continue;
+
+        // Prevent stacking leftover characters on the terminal point
+        if (centerDist > totalPathLen) {
+            break;
+        }
 
         PathPoint pt = samplePathAtDist(centerDist);
 

@@ -114,6 +114,24 @@ void AudioFoleyEngine::triggerSound(uint16_t soundId, float intensity) {
             v.decay = 0.9994f;
             v.noiseMix = 0.18f;
             break;
+        case FoleySound::ThunderClap:
+            v.freq1 = 58.0f;
+            v.freq2 = 104.0f;
+            v.decay = 0.99982f;
+            v.noiseMix = 0.84f;
+            break;
+        case FoleySound::RainPatter:
+            v.freq1 = 820.0f;
+            v.freq2 = 1640.0f;
+            v.decay = 0.9968f;
+            v.noiseMix = 0.88f;
+            break;
+        case FoleySound::WindGust:
+            v.freq1 = 175.0f;
+            v.freq2 = 340.0f;
+            v.decay = 0.9991f;
+            v.noiseMix = 0.72f;
+            break;
         default:
             v.freq1 = 280.0f;
             v.freq2 = 620.0f;

@@ -134,7 +134,7 @@ std::string ProceduralNameGenerator::generateRegionTitle(uint32_t seed, BiomeId 
         const char* sfx = kForestSuffixes[h1 % kForestSuffixes.size()];
         return std::string(pfx) + sfx;
     }
-    if (biome == BiomeId::AlpinePeak) {
+    if (biome == BiomeId::AlpinePeak || biome == BiomeId::SnowyTundra || biome == BiomeId::GlacialIce) {
         const char* pfx = kMountainPrefixes[h0 % kMountainPrefixes.size()];
         const char* sfx = kMountainSuffixes[h1 % kMountainSuffixes.size()];
         return std::string(pfx) + " " + sfx;

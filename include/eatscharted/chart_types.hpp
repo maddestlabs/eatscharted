@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <cmath>
 #include <algorithm>
+#include <array>
+#include <string>
 
 namespace eatscharted {
 
@@ -71,7 +73,9 @@ enum class BiomeId : uint8_t {
     AlpinePeak        = 9,  // High hachured mountain ridges & snow-inked crests
     CalamityBlight    = 10, // Ashen violet-charcoal ruptured leyline wastes
     DungeonFlagstone  = 11, // One-Page Dungeon gridded flagstone floor
-    DungeonHatchedWall= 12  // One-Page Dungeon cross-hatched solid rock perimeter
+    DungeonHatchedWall= 12, // One-Page Dungeon cross-hatched solid rock perimeter
+    SnowyTundra       = 13, // Frost-rimed arctic plains & tundra moss
+    GlacialIce        = 14  // Deep azure crevasse ice sheets & frozen pack
 };
 
 /**
@@ -240,6 +244,20 @@ struct alignas(16) PointLight {
 };
 static_assert(sizeof(PointLight) == 32, "PointLight must be 32 bytes (2x vec4) for WGSL alignment");
 
+/**
+ * Curved Calligraphic Map Banner laid out along a Quadratic Bezier spline (P0 -> P1 -> P2)
+ * directly on the parchment map surface (Watabou Perilous Shores + Cat Quest style).
+ */
+struct CurvedMapBanner {
+    std::string text;
+    Vec2f p0{0.0f, 0.0f};
+    Vec2f p1{0.0f, 0.0f};
+    Vec2f p2{0.0f, 0.0f};
+    float letterSize{2.4f};     // World-space height in meters
+    bool isRegionHeader{true};  // true = large arched region title, false = town ribbon banner
+    bool isWaterTitle{false};   // Italicized/spaced sea & bay nomenclature
+};
+
 struct CameraConfig {
     Vec3f position{0.0f, 34.0f, -32.0f};
     Vec3f target{0.0f, 1.5f, 0.0f};
@@ -375,6 +393,109 @@ struct AtmosphereConfig {
         return cfg;
     }
 };
+
+/**
+ * Procedural Cartographic Weather & Climate Types.
+ */
+enum class WeatherType : uint8_t {
+    Clear        = 0, // Fair sky, sunlit/starlit parchment
+    Overcast     = 1, // Soft diffuse sky veil, diminished shadows
+    Drizzle      = 2, // Light rain patter, slight paper wetness
+    Downpour     = 3, // Heavy rain, puddle ink rings, darkened wet watercolor
+    Thunderstorm = 4, // Violent tempest, lightning flashes, sea chop, thunder
+    Flurries     = 5, // Light snow flurries in cooler/mountainous biomes
+    Blizzard     = 6, // Heavy snow storm, descending snowline, howling wind
+    Sandstorm    = 7  // Dry desert haboob in arid wastes, ochre dust haze
+};
+
+[[nodiscard]] inline const char* weatherTypeName(WeatherType w) noexcept {
+    switch (w) {
+        case WeatherType::Clear:        return "Fair Sunlit Skies";
+        case WeatherType::Overcast:     return "Overcast Paper Veil";
+        case WeatherType::Drizzle:      return "Gentle Rain Drizzle";
+        case WeatherType::Downpour:     return "Cartographer's Downpour";
+        case WeatherType::Thunderstorm: return "Gale Tempest & Thunder";
+        case WeatherType::Flurries:     return "Highland Snow Flurries";
+        case WeatherType::Blizzard:     return "Alpine Mountain Blizzard";
+        case WeatherType::Sandstorm:    return "Sunscorched Sandstorm";
+        default:                        return "Fair Skies";
+    }
+}
+
+/**
+ * Atmospheric Weather Configuration.
+ */
+struct WeatherConfig {
+    WeatherType type{WeatherType::Clear};
+    float intensity{0.0f};          // 0.0 (calm) to 1.0 (extreme)
+    float wetness{0.0f};            // Ground wetness & puddle accumulation (0.0 to 1.0)
+    float snowCover{0.0f};          // Snowline descent / accumulation factor (0.0 to 1.0)
+    float windSpeed{3.5f};          // Wind speed in m/s
+    Vec3f windDirection{0.707f, 0.0f, 0.707f}; // Normalized wind vector
+    float lightningFlash{0.0f};     // 0.0 to 1.0 momentary flash illumination
+    float stormSurge{0.0f};         // Ocean wave chopping multiplier
+    bool autoCycle{true};           // Procedural weather front evolution
+    float cycleSpeed{1.0f / 240.0f};// 1 weather cycle per 4 minutes (240s)
+};
+
+/**
+ * Biome Climate Profile & Weather Transition Weights.
+ * Defines the thermodynamic baseline and natural weather distribution for each biome.
+ */
+struct BiomeClimateProfile {
+    float baseTemp{18.0f};          // Sea-level ambient temperature in °C
+    float humidityMult{1.0f};       // Moisture/humidity multiplier (0.0 to 1.5)
+    float minSnowAltitude{6.0f};    // Minimum elevation for natural snow cover (meters)
+    WeatherType defaultWeather{WeatherType::Clear};
+    // Weather probability weights during natural cycles:
+    // [0:Clear, 1:Overcast, 2:Drizzle, 3:Downpour, 4:Thunderstorm, 5:Flurries, 6:Blizzard, 7:Sandstorm]
+    std::array<float, 8> weatherWeights{
+        0.40f, 0.28f, 0.18f, 0.10f, 0.04f, 0.00f, 0.00f, 0.00f
+    };
+};
+
+[[nodiscard]] inline BiomeClimateProfile getBiomeClimateProfile(BiomeId biome) noexcept {
+    switch (biome) {
+        case BiomeId::OceanDeep:
+            return {16.0f, 1.25f, 8.0f, WeatherType::Clear,
+                    {0.30f, 0.25f, 0.15f, 0.15f, 0.15f, 0.00f, 0.00f, 0.00f}};
+        case BiomeId::CoastalShoals:
+        case BiomeId::SandyBeach:
+            return {18.5f, 1.10f, 7.5f, WeatherType::Clear,
+                    {0.45f, 0.25f, 0.15f, 0.10f, 0.05f, 0.00f, 0.00f, 0.00f}};
+        case BiomeId::SaltMarsh:
+            return {17.0f, 1.35f, 7.0f, WeatherType::Overcast,
+                    {0.20f, 0.40f, 0.25f, 0.12f, 0.03f, 0.00f, 0.00f, 0.00f}};
+        case BiomeId::LushMeadow:
+        case BiomeId::DeciduousWoodland:
+            return {19.0f, 1.00f, 6.0f, WeatherType::Clear,
+                    {0.40f, 0.28f, 0.18f, 0.10f, 0.04f, 0.00f, 0.00f, 0.00f}};
+        case BiomeId::TaigaPines:
+            return {4.0f, 0.85f, 2.8f, WeatherType::Overcast,
+                    {0.25f, 0.35f, 0.08f, 0.02f, 0.00f, 0.22f, 0.08f, 0.00f}};
+        case BiomeId::AlpinePeak:
+            return {-4.5f, 0.90f, 0.0f, WeatherType::Flurries,
+                    {0.20f, 0.25f, 0.00f, 0.00f, 0.00f, 0.35f, 0.20f, 0.00f}};
+        case BiomeId::SnowyTundra:
+            return {-7.0f, 0.70f, 0.0f, WeatherType::Flurries,
+                    {0.20f, 0.30f, 0.00f, 0.00f, 0.00f, 0.35f, 0.15f, 0.00f}};
+        case BiomeId::GlacialIce:
+            return {-15.0f, 0.40f, 0.0f, WeatherType::Blizzard,
+                    {0.25f, 0.25f, 0.00f, 0.00f, 0.00f, 0.25f, 0.25f, 0.00f}};
+        case BiomeId::AridSteppe:
+        case BiomeId::BadlandsCanyon:
+            return {32.0f, 0.15f, 999.0f, WeatherType::Clear,
+                    {0.65f, 0.15f, 0.00f, 0.00f, 0.02f, 0.00f, 0.00f, 0.18f}};
+        case BiomeId::CalamityBlight:
+            return {24.0f, 0.30f, 999.0f, WeatherType::Thunderstorm,
+                    {0.10f, 0.45f, 0.05f, 0.10f, 0.30f, 0.00f, 0.00f, 0.00f}};
+        case BiomeId::DungeonFlagstone:
+        case BiomeId::DungeonHatchedWall:
+        default:
+            return {14.0f, 0.50f, 999.0f, WeatherType::Clear,
+                    {1.00f, 0.00f, 0.00f, 0.00f, 0.00f, 0.00f, 0.00f, 0.00f}};
+    }
+}
 
 } // namespace eatscharted
 

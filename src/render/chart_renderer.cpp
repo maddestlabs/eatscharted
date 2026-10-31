@@ -137,6 +137,8 @@ struct alignas(16) SceneUniforms {
     float heroPos[4];    // xyz = hero world position, w = atlasZoom
     float gridOrigin[4]; // xy = activeChunkX, activeChunkZ, z = kChunkSize, w = kChunkRadius
     float discoveryGrid[16][4]; // 7x7 discovery grid packed in 16 vec4s
+    float weatherParams[4]; // x = wetness, y = snowCover, z = stormSurge/windSpeed, w = lightningFlash
+    float windDirection[4]; // xyz = windDirection, w = localWeatherType
 };
 
 // ============================================================================
@@ -158,6 +160,8 @@ struct SceneUniforms {
     heroPos       : vec4<f32>,
     gridOrigin    : vec4<f32>,
     discoveryGrid : array<vec4<f32>, 16>,
+    weatherParams : vec4<f32>,
+    windDirection : vec4<f32>,
 };
 
 struct ChartVertex {
@@ -308,6 +312,8 @@ struct SceneUniforms {
     heroPos       : vec4<f32>,
     gridOrigin    : vec4<f32>,
     discoveryGrid : array<vec4<f32>, 16>,
+    weatherParams : vec4<f32>,
+    windDirection : vec4<f32>,
 };
 
 struct ChartVertex {
@@ -506,6 +512,12 @@ fn fs_sky(in : SkyOut) -> @location(0) vec4<f32> {
         let star = step(0.984, starRnd) * starTwinkle * isNight * 0.42;
         skyCol += vec3<f32>(star * 0.75, star * 0.85, star);
     }
+
+    // Flash illumination from lightning during storms
+    if (u.weatherParams.w > 0.001) {
+        skyCol += vec3<f32>(0.65, 0.78, 1.0) * (u.weatherParams.w * 1.6);
+    }
+
     return vec4<f32>(skyCol, 240.0);
 }
 
@@ -525,6 +537,8 @@ fn biomePaperTint(biomeId : u32) -> vec3<f32> {
         case 10u:{ return vec3<f32>(0.480, 0.280, 0.520); } // CalamityBlight (Deep Arcane Violet)
         case 11u:{ return vec3<f32>(0.84, 0.79, 0.69); }    // DungeonFlagstone
         case 12u:{ return vec3<f32>(0.72, 0.66, 0.56); }    // DungeonHatchedWall
+        case 13u:{ return vec3<f32>(0.880, 0.930, 0.960); } // SnowyTundra (Pale frosty arctic tundra)
+        case 14u:{ return vec3<f32>(0.760, 0.890, 0.950); } // GlacialIce (Glacial cerulean ice pack)
         default: { return vec3<f32>(0.440, 0.745, 0.220); }
     }
 }
@@ -608,8 +622,30 @@ fn vs_world(@builtin(vertex_index) vertexIndex : u32) -> WorldVSOut {
     }
     let aridFactor = mix(arid0, arid1, blend);
 
+    // Continuous snowy tundra factor (BiomeId::SnowyTundra = 13u)
+    var tundra0 = 0.0;
+    if (landBiome0 == 13u) {
+        tundra0 = 1.0;
+    }
+    var tundra1 = 0.0;
+    if (landBiome1 == 13u) {
+        tundra1 = 1.0;
+    }
+    let tundraFactor = mix(tundra0, tundra1, blend);
+
+    // Continuous glacial ice factor (BiomeId::GlacialIce = 14u)
+    var ice0 = 0.0;
+    if (landBiome0 == 14u) {
+        ice0 = 1.0;
+    }
+    var ice1 = 0.0;
+    if (landBiome1 == 14u) {
+        ice1 = 1.0;
+    }
+    let iceFactor = mix(ice0, ice1, blend);
+
     out.terrainColor  = vec4<f32>(baseCol, vegFactor);
-    out.terrainParams = vec4<f32>(aridFactor, blend, 0.0, 0.0);
+    out.terrainParams = vec4<f32>(aridFactor, blend, tundraFactor, iceFactor);
 
     // Apply hardware depth bias to ground-inscribed map banners & path text so they NEVER z-fight or clip into terrain
     if ((out.flags & 8u) != 0u) {
@@ -823,14 +859,25 @@ static const char* kSceneWgslPart2b = R"(
             // OCEAN / BAY: Animated Dual-Octave Swell Waves + Vector Shoreline Rings!
             let shoreDist = -coastD;
 
-            // Subtle 3D Gerstner/Dual-Sine Wave Normal & Swell Animation
+            // Subtle 3D Gerstner/Multi-Harmonic Wave Normal with Invariant Phase Rates
+            // (Phase rates are constant with respect to time to prevent instantaneous speed-up when stormSurge transitions!)
+            let stormSurge = u.weatherParams.z;
             let wPhase1 = mapXZ.x * 0.52 + mapXZ.y * 0.38 + time * 1.45;
             let wPhase2 = mapXZ.x * 0.31 - mapXZ.y * 0.64 - time * 1.15;
             let wPhase3 = (mapXZ.x - mapXZ.y) * 1.15 + time * 2.10;
+            // High-frequency wind-blown chop octave whose AMPLITUDE smoothly fades in with stormSurge
+            let chopPhase = mapXZ.x * 1.42 - mapXZ.y * 1.18 + time * 2.85;
 
-            let waveH = sin(wPhase1) * 0.50 + sin(wPhase2) * 0.35 + cos(wPhase3) * 0.15;
-            let dWdX  = cos(wPhase1) * 0.52 * 0.50 + cos(wPhase2) * 0.31 * 0.35 - sin(wPhase3) * 1.15 * 0.15;
-            let dWdZ  = cos(wPhase1) * 0.38 * 0.50 - cos(wPhase2) * 0.64 * 0.35 + sin(wPhase3) * 1.15 * 0.15;
+            let baseWaveH = sin(wPhase1) * 0.50 + sin(wPhase2) * 0.35 + cos(wPhase3) * 0.15;
+            let chopH     = sin(chopPhase) * 0.28 * stormSurge;
+            let waveH     = baseWaveH * (1.0 + 0.75 * stormSurge) + chopH;
+
+            let baseDWdX  = cos(wPhase1) * 0.52 * 0.50 + cos(wPhase2) * 0.31 * 0.35 - sin(wPhase3) * 1.15 * 0.15;
+            let baseDWdZ  = cos(wPhase1) * 0.38 * 0.50 - cos(wPhase2) * 0.64 * 0.35 + sin(wPhase3) * 1.15 * 0.15;
+            let chopDWdX  = cos(chopPhase) * 1.42 * 0.28 * stormSurge;
+            let chopDWdZ  = -cos(chopPhase) * 1.18 * 0.28 * stormSurge;
+            let dWdX      = baseDWdX * (1.0 + 0.75 * stormSurge) + chopDWdX;
+            let dWdZ      = baseDWdZ * (1.0 + 0.75 * stormSurge) + chopDWdZ;
 
             // Smoothly damp wave normal right at the shoreline edge, fuller swell offshore
             let swellStrength = smoothstep(0.0, 3.5, shoreDist) * 0.22;
@@ -879,6 +926,23 @@ static const char* kSceneWgslPart2b = R"(
             // LANDMASS: Natural Noise-Based Procgen Terrain Materials (No Vector Grid/Hachure Clutter)
             let slopeMag = length(gradXZ);
 
+            // Dynamic Rain Wetness, Paper Saturation & Procedural Concentric Puddle Ink Rings
+            let wetness = u.weatherParams.x;
+            if (wetness > 0.01) {
+                col *= (1.0 - 0.16 * wetness);
+                if (wetness > 0.22 && slopeMag < 0.15) {
+                    let pUV = mapXZ * 2.4;
+                    let pCell = floor(pUV);
+                    let pFract = fract(pUV) - 0.5;
+                    let dropSeed = hash2D(pCell);
+                    let dropTime = fract(time * 1.7 + dropSeed * 6.28);
+                    let ringRadius = dropTime * 0.40;
+                    let ringDist = abs(length(pFract) - ringRadius);
+                    let ripple = (1.0 - smoothstep(0.0, 0.055, ringDist)) * (1.0 - dropTime);
+                    col = mix(col, inkDark, ripple * wetness * 0.45);
+                }
+            }
+
             // A) Natural Wind-Rippled Coastal Sand Beach & Wet Shoreline Gradient
             let beachNoise = (mediumNoise - 0.5) * 0.95;
             let beachSpan  = 3.8 + beachNoise;
@@ -903,7 +967,9 @@ static const char* kSceneWgslPart2b = R"(
                 let grassMod = mix(lushHighlight, deepMoss, (1.0 - turfPatch) * (1.0 - fineGrain));
                 col = mix(col, grassMod, vegFactor * 0.28);
             }
+)";
 
+static const char* kSceneWgslPart2bb = R"(
             // C) Sorcery! Arid Steppes & Sand Dunes: Warm Golden Ochre Wash + Inked Slope Stippling
             let aridFactor = in.terrainParams.x;
             if (aridFactor > 0.02) {
@@ -939,12 +1005,82 @@ static const char* kSceneWgslPart2b = R"(
                     col = mix(col, inkDark, ridgeInk * 0.65);
                 }
 
-                // 2. Alpine Snow accumulation on high upward-facing ledges (crisp contrast)
-                let snowHeight = smoothstep(5.0, 6.8, in.rawMapPos.y + (mediumNoise - 0.5) * 0.6);
-                let snowFlatness = smoothstep(0.40, 0.75, surfNormal.y);
+                // 2. Alpine Snow accumulation on high upward-facing ledges (crisp contrast & dynamic weather snowline)
+                let snowBase = 5.2 - u.weatherParams.y * 2.6;
+                let snowHeight = smoothstep(snowBase, snowBase + 1.4, in.rawMapPos.y + (mediumNoise - 0.5) * 0.6);
+                let snowFlatness = smoothstep(0.38, 0.72, surfNormal.y);
                 let snowMask = clamp(snowHeight * snowFlatness, 0.0, 1.0);
                 let snowCol = vec3<f32>(0.97, 0.98, 1.0) * (0.95 + 0.05 * fineGrain);
                 col = mix(col, snowCol, snowMask);
+            }
+
+            // Dynamic Winter Snow Accumulation on foothills and plateaus during blizzards
+            let globalSnow = u.weatherParams.y;
+            if (globalSnow > 0.30) {
+                let footSnowLine = 4.6 - globalSnow * 2.2;
+                let hFootSnow = smoothstep(footSnowLine, footSnowLine + 1.2, in.rawMapPos.y + (mediumNoise - 0.5) * 0.5);
+                let flatFootSnow = smoothstep(0.42, 0.75, surfNormal.y);
+                let lowSnow = clamp(hFootSnow * flatFootSnow * (globalSnow - 0.30) / 0.70, 0.0, 1.0);
+                if (lowSnow > 0.005) {
+                    let snowCol = vec3<f32>(0.97, 0.98, 1.0) * (0.95 + 0.05 * fineGrain);
+                    col = mix(col, snowCol, lowSnow * 0.85);
+                }
+            }
+
+            // E1) Sorcery! Glacial Ice Sheets: Translucent Cyan Wash, Specular Sun Glint & Crevasse Fissures
+            let iceFactor = in.terrainParams.w;
+            if (iceFactor > 0.01) {
+                let deepAzureIce  = vec3<f32>(0.24, 0.58, 0.78);
+                let surfaceIce    = vec3<f32>(0.72, 0.89, 0.96);
+                let iceDepthShade = smoothstep(-0.25, 0.75, dot(surfNormal, normalize(u.sunDir.xyz)));
+                let iceBaseCol    = mix(deepAzureIce, surfaceIce, iceDepthShade * 0.55 + 0.45);
+
+                // Glassy specular glint catching directional sunlight on the polished ice sheet
+                let viewDir = normalize(u.camPos.xyz - in.worldPos);
+                let sunReflect = reflect(-normalize(u.sunDir.xyz), surfNormal);
+                let iceSpecular = pow(max(0.0, dot(sunReflect, viewDir)), 22.0) * 0.42;
+                let iceShine = vec3<f32>(0.92, 0.98, 1.0) * iceSpecular;
+
+                // Cartographic Glacial Crevasses: procedural fracture lines in crisp India ink with cerulean subsurface scatter
+                let crevUV = mapXZ * 0.52;
+                let crevNoise = fbmPaper(crevUV + vec2<f32>(fineGrain * 0.15, -microGrain * 0.15));
+                let crevFract = abs(fract(crevNoise * 3.4) - 0.5) * 2.0;
+                let isCrevasse = 1.0 - smoothstep(0.0, 0.09, crevFract);
+                let crevasseGlow = smoothstep(0.05, 0.22, crevFract) * (1.0 - smoothstep(0.22, 0.40, crevFract));
+                let crevColor = mix(inkDark, vec3<f32>(0.12, 0.72, 0.92), crevasseGlow * 0.75);
+
+                var iceResult = mix(iceBaseCol, crevColor, isCrevasse * 0.75);
+                iceResult += iceShine;
+                col = mix(col, iceResult, iceFactor * 0.88);
+            }
+
+            // E2) Sorcery! Frost-Rimed Snowy Tundra: Directional Sastrugi Drifts, Permafrost Ground Polygons & Arctic Lichen
+            let tundraFactor = in.terrainParams.z;
+            if (tundraFactor > 0.01) {
+                let snowParchment = vec3<f32>(0.965, 0.975, 0.995);
+                let snowShadow    = vec3<f32>(0.760, 0.830, 0.910);
+
+                // 1. Windblown Sastrugi (Snowdrift Waves) catching directional sunlight
+                let sastrugiPhase = (mapXZ.x * 0.58 + mapXZ.y * 0.36) + (mediumNoise - 0.5) * 1.4;
+                let sastrugiWave = sin(sastrugiPhase);
+                let sastrugiShade = smoothstep(-0.25, 0.65, sastrugiWave) * 0.08;
+                let sastrugiCol = mix(snowShadow, snowParchment, sastrugiShade + 0.5);
+
+                // 2. Permafrost Ice-Wedge Polygons: Delicate geometric crack network on flat tundra
+                let polyUV = mapXZ * 0.48;
+                let polyCell = fract(polyUV) - 0.5;
+                let polyDist = abs(max(abs(polyCell.x), abs(polyCell.y)) - 0.48);
+                let polyCrack = 1.0 - smoothstep(0.0, 0.045, polyDist);
+                let polyFlatness = 1.0 - smoothstep(0.12, 0.38, slopeMag);
+                let polyInk = polyCrack * polyFlatness * 0.35;
+
+                // 3. Windswept Arctic Lichen / Moss peeking through rocky tundra hummocks
+                let exposedKnoll = smoothstep(0.60, 0.86, mediumNoise) * smoothstep(0.15, 0.42, slopeMag);
+                let lichenCol = vec3<f32>(0.54, 0.58, 0.44) * (0.90 + 0.18 * fineGrain);
+
+                var tundraResult = mix(sastrugiCol, lichenCol, exposedKnoll * 0.65);
+                tundraResult = mix(tundraResult, inkDark, polyInk * 0.55);
+                col = mix(col, tundraResult, tundraFactor * 0.90);
             }
 
             // G) Sorcery! Topographic Elevation Contour Lines on Hills, Mounds & Rolling Steppes
@@ -1133,6 +1269,13 @@ static const char* kSceneWgslPart2c = R"(
     let directStrength = u.sunColor.rgb * (0.68 * ndotl * shadow);
     var lit = col * (ambientStrength + directStrength);
 
+    // Momentary lightning strike illumination during storms
+    let flash = u.weatherParams.w;
+    if (flash > 0.001) {
+        let lightningCol = vec3<f32>(0.85, 0.92, 1.15) * (flash * 2.2);
+        lit += col * lightningCol * (shadow * 0.5 + 0.5);
+    }
+
     // Dynamic water wave specular & glinting sun/moon highlights (drives Hexagonal Bokeh in Post-Process!)
     if (isWater > 0.5) {
         let V = normalize(u.camPos.xyz - in.worldPos);
@@ -1215,9 +1358,10 @@ fn vs_sprite(@builtin(vertex_index) vertexIndex : u32) -> StandeeVSOut {
     var swayX = 0.0;
     var bobY  = 0.0;
     if ((flags & 2u) != 0u) {
-        // Gentle wind breeze wave across foliage & grass
-        let windWave = sin(time * 1.85 + rawFoot.x * 0.22 + rawFoot.z * 0.18 + phase);
-        swayX = windWave * 0.12 * (c.y * c.y);
+        // Gentle wind breeze wave across foliage & grass, amplified during storms
+        let windFactor = 0.85 + 0.45 * u.weatherParams.z;
+        let windWave = sin(time * (1.85 + 0.75 * u.weatherParams.z) + rawFoot.x * 0.22 + rawFoot.z * 0.18 + phase);
+        swayX = windWave * 0.12 * windFactor * (c.y * c.y);
     }
     if ((flags & 4u) != 0u) {
         bobY = abs(sin(time * 2.8 + phase)) * 0.08 * c.y;
@@ -1368,6 +1512,150 @@ fn fs_sprite(in : StandeeVSOut) -> @location(0) vec4<f32> {
 )";
 
 // ============================================================================
+// WGSL SHADER 1b: CAMERA-FRUSTUM BOUNDED INSTANCED WEATHER PARTICLES
+// ============================================================================
+static const char* kSceneWgslPart4 = R"(
+struct WeatherParticleOut {
+    @builtin(position) clipPos : vec4<f32>,
+    @location(0) uv            : vec2<f32>,
+    @location(1) color         : vec4<f32>,
+    @location(2) @interpolate(flat) pType : u32,
+};
+
+@vertex
+fn vs_weather_particles(@builtin(vertex_index) vertexIndex : u32) -> WeatherParticleOut {
+    let particleId = vertexIndex / 6u;
+    let cornerId   = vertexIndex % 6u;
+    let time       = u.camPos.w;
+    let intensity  = u.windDirection.y;
+    let wType      = u.windDirection.w;
+
+    let seedA = hash2D(vec2<f32>(f32(particleId) * 0.137, f32(particleId) * 0.389));
+    let seedB = hash2D(vec2<f32>(f32(particleId) * 0.723, f32(particleId) * 0.915));
+    let seedC = hash2D(vec2<f32>(f32(particleId) * 0.451, f32(particleId) * 0.283));
+
+    // Dynamic Density Culling: continuous particle pool scaling by intensity
+    if (seedA > intensity || intensity <= 0.005) {
+        var out : WeatherParticleOut;
+        out.clipPos = vec4<f32>(0.0, 0.0, -2.0, 1.0);
+        out.uv = vec2<f32>(0.0);
+        out.color = vec4<f32>(0.0);
+        out.pType = 0u;
+        return out;
+    }
+
+    let boxSize = vec3<f32>(48.0, 26.0, 48.0);
+    let p0 = (vec3<f32>(seedA, seedB, seedC) - 0.5) * boxSize;
+
+    var vel = vec3<f32>(0.0);
+    var pWidth = 0.04;
+    var pHeight = 0.65;
+    var col = vec4<f32>(0.10, 0.13, 0.18, 0.38);
+    var isType = 0u;
+
+    let wind = u.windDirection.xyz * (3.0 + u.weatherParams.z * 12.0);
+
+    if (wType == 5.0 || wType == 6.0) {
+        // Snow / Flurries / Blizzard: Diegetic cut-paper flakes
+        isType = 1u;
+        let fallSpeed = select(1.6 + intensity * 1.4, 4.2, wType == 6.0);
+        let wobbleX = sin(time * 3.2 + seedA * 6.28) * 0.65;
+        let wobbleZ = cos(time * 2.8 + seedB * 6.28) * 0.65;
+        vel = vec3<f32>(wind.x * 0.35 + wobbleX, -fallSpeed, wind.z * 0.35 + wobbleZ);
+
+        // Flake scale & opacity smoothly scale with intensity:
+        // Light snow (intensity ~0.15 - 0.25): delicate 0.06m - 0.10m flakes, soft gentle alpha
+        // Blizzard (intensity ~1.0): 0.14m - 0.24m flakes, dense alpha
+        let flakeScale = (0.06 + seedC * 0.08) * (0.55 + 0.45 * intensity);
+        pWidth = flakeScale;
+        pHeight = flakeScale;
+        let brightness = 0.94 + seedA * 0.06;
+        let alpha = (0.35 + 0.65 * intensity) * (0.80 + seedB * 0.20);
+        col = vec4<f32>(brightness, brightness, 1.0, alpha);
+    } else if (wType == 7.0) {
+        // Sandstorm: Warm ochre dust flecks
+        isType = 2u;
+        vel = vec3<f32>(wind.x * 1.4, -1.2 + sin(time * 4.0 + seedA * 6.28) * 0.8, wind.z * 1.4);
+        pWidth = (0.06 + seedC * 0.07) * (0.50 + 0.50 * intensity);
+        pHeight = (0.05 + seedB * 0.05) * (0.50 + 0.50 * intensity);
+        col = vec4<f32>(0.88, 0.74, 0.42, 0.30 + 0.55 * intensity);
+    } else if (wType >= 2.0) {
+        // Rain: Drizzle, Downpour, Thunderstorm (fast wind-sheared ink streaks)
+        isType = 0u;
+        let fallSpeed = select(14.0 + intensity * 6.0, 24.0, wType >= 3.0);
+        vel = vec3<f32>(wind.x * 0.6, -fallSpeed, wind.z * 0.6);
+        pWidth = (0.018 + 0.024 * intensity);
+        pHeight = (0.28 + 0.55 * intensity);
+        let alpha = (0.16 + 0.30 * intensity);
+        col = vec4<f32>(0.10, 0.13, 0.18, alpha);
+    } else {
+        pWidth = 0.0;
+        pHeight = 0.0;
+    }
+
+    let displaced = p0 + vel * time;
+    let relToHero = displaced - u.heroPos.xyz;
+    let wrapped = fract(relToHero / boxSize + 0.5) - 0.5;
+    let particlePos = u.heroPos.xyz + wrapped * boxSize;
+    let worldBase = applyHorizonCurve(particlePos);
+
+    let corners = array<vec2<f32>, 6>(
+        vec2<f32>(-0.5, -0.5),
+        vec2<f32>( 0.5, -0.5),
+        vec2<f32>( 0.5,  0.5),
+        vec2<f32>(-0.5, -0.5),
+        vec2<f32>( 0.5,  0.5),
+        vec2<f32>(-0.5,  0.5)
+    );
+    let c = corners[cornerId];
+
+    let rightVec = normalize(vec3<f32>(u.camBasisX.x, 0.0, u.camBasisX.z));
+    let upVec    = normalize(vec3<f32>(u.camBasisY.x, u.camBasisY.y, u.camBasisY.z));
+
+    var cornerWorld = worldBase;
+    if (isType == 0u) {
+        let streakDir = normalize(vel);
+        let perp = select(vec3<f32>(0.0, 0.0, 1.0), vec3<f32>(1.0, 0.0, 0.0), abs(streakDir.z) > 0.9);
+        let streakRight = normalize(cross(streakDir, perp));
+        cornerWorld += streakRight * (c.x * pWidth) + streakDir * (c.y * pHeight);
+    } else {
+        let spinAngle = time * (1.8 + seedA * 2.2) + seedB * 6.28;
+        let cosA = cos(spinAngle);
+        let sinA = sin(spinAngle);
+        let rotX = c.x * cosA - c.y * sinA;
+        let rotY = c.x * sinA + c.y * cosA;
+        cornerWorld += rightVec * (rotX * pWidth) + upVec * (rotY * pHeight);
+    }
+
+    var out : WeatherParticleOut;
+    out.clipPos = u.viewProj * vec4<f32>(cornerWorld, 1.0);
+    out.uv = c;
+    out.color = col;
+    out.pType = isType;
+    return out;
+}
+
+@fragment
+fn fs_weather_particles(in : WeatherParticleOut) -> @location(0) vec4<f32> {
+    if (in.pType == 1u) {
+        let d = abs(in.uv.x) + abs(in.uv.y);
+        if (d > 0.48) { discard; }
+        let edge = 1.0 - smoothstep(0.40, 0.48, d);
+        return vec4<f32>(in.color.rgb, in.color.a * edge);
+    } else if (in.pType == 2u) {
+        let d = length(in.uv);
+        if (d > 0.48) { discard; }
+        let edge = 1.0 - smoothstep(0.25, 0.48, d);
+        return vec4<f32>(in.color.rgb, in.color.a * edge);
+    }
+    let dX = abs(in.uv.x) * 2.0;
+    let dY = abs(in.uv.y) * 2.0;
+    let fade = (1.0 - smoothstep(0.1, 0.95, dX)) * (1.0 - smoothstep(0.65, 1.0, dY));
+    return vec4<f32>(in.color.rgb, in.color.a * fade);
+}
+)";
+
+// ============================================================================
 // WGSL SHADER 2: REALMS-STYLE HEXAGONAL TILT-SHIFT BOKEH, GOD RAYS & ACES PASS
 // ============================================================================
 static const char* kPostProcessWgslSource = R"(
@@ -1386,6 +1674,8 @@ struct SceneUniforms {
     heroPos       : vec4<f32>,
     gridOrigin    : vec4<f32>,
     discoveryGrid : array<vec4<f32>, 16>,
+    weatherParams : vec4<f32>,
+    windDirection : vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> u       : SceneUniforms;
@@ -1562,6 +1852,8 @@ struct SceneUniforms {
     heroPos       : vec4<f32>,
     gridOrigin    : vec4<f32>,
     discoveryGrid : array<vec4<f32>, 16>,
+    weatherParams : vec4<f32>,
+    windDirection : vec4<f32>,
 };
 
 struct OverlayVertex2D {
@@ -1749,6 +2041,27 @@ void fillSceneUniforms(const ChartWorld& world, uint32_t width, uint32_t height,
                                                           : static_cast<float>(ChartWorld::kChunkRadius);
 
     world.fillDiscoveryGrid(world.activeChunkX(), world.activeChunkZ(), outU.discoveryGrid);
+
+    const auto& wtr = world.weather();
+    auto heroWeather = world.evaluateLocalWeather(world.hero().pos.x, world.hero().pos.z);
+    outU.weatherParams[0] = wtr.wetness;
+    outU.weatherParams[1] = wtr.snowCover;
+    outU.weatherParams[2] = wtr.stormSurge;
+    outU.weatherParams[3] = wtr.lightningFlash;
+
+    outU.windDirection[0] = wtr.windDirection.x;
+    outU.windDirection[1] = heroWeather.intensity; // Continuous precipitation intensity [0.0 - 1.0]
+    outU.windDirection[2] = wtr.windDirection.z;
+    outU.windDirection[3] = static_cast<float>(heroWeather.type);
+
+    if (wtr.type == WeatherType::Overcast || wtr.type == WeatherType::Downpour ||
+        wtr.type == WeatherType::Thunderstorm || wtr.type == WeatherType::Blizzard) {
+        float dim = (wtr.type == WeatherType::Thunderstorm || wtr.type == WeatherType::Blizzard) ? 0.55f : 0.72f;
+        outU.sunColor[0] *= dim;
+        outU.sunColor[1] *= dim;
+        outU.sunColor[2] *= dim;
+        outU.sunDir[3] *= 1.35f;
+    }
 }
 
 struct GpuChartContext {
@@ -1764,6 +2077,7 @@ struct GpuChartContext {
     WGPURenderPipeline skyPipeline{nullptr};
     WGPURenderPipeline worldPipeline{nullptr};
     WGPURenderPipeline spritePipeline{nullptr};
+    WGPURenderPipeline weatherParticlePipeline{nullptr};
     WGPURenderPipeline postPipeline{nullptr};
     WGPURenderPipeline overlayPipeline{nullptr};
 
@@ -1807,6 +2121,8 @@ struct GpuChartContext {
     uint32_t uploadedWorldVertexCount{0};
     uint32_t uploadedSpriteCount{0};
     uint32_t uploadedOverlayVertexCount{0};
+    uint32_t activeWeatherParticleCount{0};
+    uint32_t lastUploadedStaticStandeeCount{0};
 
     bool init(GLFWwindow* optWindow, uint32_t width, uint32_t height, const InkAtlasData& atlas) {
         targetWidth = width;
@@ -1965,7 +2281,7 @@ struct GpuChartContext {
     }
 
     bool createPipelinesAndResources(uint32_t width, uint32_t height, const InkAtlasData& atlas) {
-        std::string sceneWgsl = std::string(kSceneWgslPart1) + kSceneWgslPart2a + kSceneWgslPart2b + kSceneWgslPart2c + kSceneWgslPart3;
+        std::string sceneWgsl = std::string(kSceneWgslPart1) + kSceneWgslPart2a + kSceneWgslPart2b + kSceneWgslPart2bb + kSceneWgslPart2c + kSceneWgslPart3 + kSceneWgslPart4;
         WGPUShaderModule shadowSM  = createShaderModule(device, kShadowWgslSource);
         WGPUShaderModule sceneSM   = createShaderModule(device, sceneWgsl.c_str());
         WGPUShaderModule postSM    = createShaderModule(device, kPostProcessWgslSource);
@@ -2147,6 +2463,43 @@ struct GpuChartContext {
         spriteDesc.multisample.count = 1;
         spriteDesc.multisample.mask = ~0u;
         spritePipeline = wgpuDeviceCreateRenderPipeline(device, &spriteDesc);
+
+        // 1b. Camera-Frustum Bounded Weather Particles Pipeline (Rain, Snow, Dust)
+        WGPUBlendState weatherBlend{};
+        weatherBlend.color.srcFactor = WGPUBlendFactor_SrcAlpha;
+        weatherBlend.color.dstFactor = WGPUBlendFactor_OneMinusSrcAlpha;
+        weatherBlend.color.operation = WGPUBlendOperation_Add;
+        weatherBlend.alpha.srcFactor = WGPUBlendFactor_One;
+        weatherBlend.alpha.dstFactor = WGPUBlendFactor_OneMinusSrcAlpha;
+        weatherBlend.alpha.operation = WGPUBlendOperation_Add;
+
+        WGPUColorTargetState weatherTarget{};
+        weatherTarget.format = WGPUTextureFormat_RGBA16Float;
+        weatherTarget.blend = &weatherBlend;
+        weatherTarget.writeMask = WGPUColorWriteMask_All;
+
+        WGPUDepthStencilState weatherDepth{};
+        weatherDepth.format = WGPUTextureFormat_Depth32Float;
+        weatherDepth.depthWriteEnabled = WGPUOptionalBool_False;
+        weatherDepth.depthCompare = WGPUCompareFunction_LessEqual;
+
+        WGPUFragmentState weatherFrag{};
+        weatherFrag.module = sceneSM;
+        weatherFrag.entryPoint = WGPUStringView{"fs_weather_particles", 20};
+        weatherFrag.targetCount = 1;
+        weatherFrag.targets = &weatherTarget;
+
+        WGPURenderPipelineDescriptor weatherDesc{};
+        weatherDesc.layout = scenePL;
+        weatherDesc.vertex.module = sceneSM;
+        weatherDesc.vertex.entryPoint = WGPUStringView{"vs_weather_particles", 20};
+        weatherDesc.fragment = &weatherFrag;
+        weatherDesc.primitive.topology = WGPUPrimitiveTopology_TriangleList;
+        weatherDesc.primitive.cullMode = WGPUCullMode_None;
+        weatherDesc.depthStencil = &weatherDepth;
+        weatherDesc.multisample.count = 1;
+        weatherDesc.multisample.mask = ~0u;
+        weatherParticlePipeline = wgpuDeviceCreateRenderPipeline(device, &weatherDesc);
 
         wgpuPipelineLayoutRelease(scenePL);
         wgpuShaderModuleRelease(sceneSM);
@@ -2427,10 +2780,12 @@ struct GpuChartContext {
             spriteBufferReallocated = true;
         }
         if (!spList.empty()) {
-            if (rebuildStaticWorldVerts || spriteBufferReallocated) {
+            uint32_t currentStaticCount = world.staticStandeeCount();
+            if (rebuildStaticWorldVerts || spriteBufferReallocated || currentStaticCount != lastUploadedStaticStandeeCount) {
                 wgpuQueueWriteBuffer(queue, spriteBuffer, 0, spList.data(), spList.size() * sizeof(StandeeInstance));
+                lastUploadedStaticStandeeCount = currentStaticCount;
             } else {
-                uint32_t staticCnt = std::min<uint32_t>(world.staticStandeeCount(), static_cast<uint32_t>(spList.size()));
+                uint32_t staticCnt = std::min<uint32_t>(currentStaticCount, static_cast<uint32_t>(spList.size()));
                 uint32_t dynCnt = static_cast<uint32_t>(spList.size()) - staticCnt;
                 if (dynCnt > 0) {
                     wgpuQueueWriteBuffer(
@@ -2454,6 +2809,15 @@ struct GpuChartContext {
         if (!tgs.empty()) {
             size_t count = std::min<size_t>(tgs.size(), 64u);
             wgpuQueueWriteBuffer(queue, telegraphBuffer, 0, tgs.data(), count * sizeof(CombatTelegraph));
+        }
+
+        auto heroWeather = world.evaluateLocalWeather(world.hero().pos.x, world.hero().pos.z);
+        uint32_t wType = static_cast<uint32_t>(heroWeather.type);
+        if (wType >= 2u && heroWeather.intensity > 0.005f) {
+            // Allocate full particle instance budget; dynamic density filtering is done per-instance in shader
+            activeWeatherParticleCount = 1536u;
+        } else {
+            activeWeatherParticleCount = 0u;
         }
 
         if (needRebind || !shadowBindGroup || !sceneBindGroup) {
@@ -2589,6 +2953,10 @@ struct GpuChartContext {
             wgpuRenderPassEncoderSetPipeline(scenePass, spritePipeline);
             wgpuRenderPassEncoderDraw(scenePass, uploadedSpriteCount * 6u, 1u, 0u, 0u);
         }
+        if (activeWeatherParticleCount > 0 && weatherParticlePipeline) {
+            wgpuRenderPassEncoderSetPipeline(scenePass, weatherParticlePipeline);
+            wgpuRenderPassEncoderDraw(scenePass, activeWeatherParticleCount * 6u, 1u, 0u, 0u);
+        }
         wgpuRenderPassEncoderEnd(scenePass);
         wgpuRenderPassEncoderRelease(scenePass);
 
@@ -2646,6 +3014,7 @@ struct GpuChartContext {
         if (skyPipeline) wgpuRenderPipelineRelease(skyPipeline);
         if (worldPipeline) wgpuRenderPipelineRelease(worldPipeline);
         if (spritePipeline) wgpuRenderPipelineRelease(spritePipeline);
+        if (weatherParticlePipeline) wgpuRenderPipelineRelease(weatherParticlePipeline);
         if (postPipeline) wgpuRenderPipelineRelease(postPipeline);
         if (overlayPipeline) wgpuRenderPipelineRelease(overlayPipeline);
         if (uniformBuffer) { wgpuBufferDestroy(uniformBuffer); wgpuBufferRelease(uniformBuffer); }
@@ -2896,6 +3265,7 @@ struct ChartLoopContext {
     bool was5{false};
     bool was6{false};
     bool wasT{false};
+    bool wasY{false};
     bool wasLeftBracket{false};
     bool wasRightBracket{false};
     bool atlasMode{false};
@@ -3077,6 +3447,24 @@ static void renderSingleFrame(ChartLoopContext& l) {
     }
     l.wasT = tDown;
 
+    // Weather Cycle Manual Step (Y)
+    bool yDown = (glfwGetKey(l.window, GLFW_KEY_Y) == GLFW_PRESS);
+    if (yDown && !l.wasY) {
+        uint8_t nextW = (static_cast<uint8_t>(l.world->weather().type) + 1) % 8;
+        l.world->setWeatherType(static_cast<WeatherType>(nextW), 1.0f);
+        auto wtrInfo = l.world->evaluateLocalWeather(l.world->hero().pos.x, l.world->hero().pos.z);
+        l.world->triggerLocaleDiscovery("WEATHER CHANGED", wtrInfo.description);
+        std::cout << "[Eatscharted] Weather stepped to: " << wtrInfo.description << " (" << weatherTypeName(static_cast<WeatherType>(nextW)) << ")\n";
+        if (nextW == static_cast<uint8_t>(WeatherType::Thunderstorm)) {
+            l.foleyEngine->triggerSound(FoleySound::ThunderClap, 0.95f);
+        } else if (nextW == static_cast<uint8_t>(WeatherType::Downpour) || nextW == static_cast<uint8_t>(WeatherType::Drizzle)) {
+            l.foleyEngine->triggerSound(FoleySound::RainPatter, 0.85f);
+        } else if (nextW == static_cast<uint8_t>(WeatherType::Blizzard) || nextW == static_cast<uint8_t>(WeatherType::Sandstorm)) {
+            l.foleyEngine->triggerSound(FoleySound::WindGust, 0.90f);
+        }
+    }
+    l.wasY = yDown;
+
     bool leftBrack = (glfwGetKey(l.window, GLFW_KEY_LEFT_BRACKET) == GLFW_PRESS);
     if (leftBrack && !l.wasLeftBracket) {
         l.world->setTimeOfDay(l.world->timeOfDay() - (1.0f / 24.0f));
@@ -3109,12 +3497,13 @@ static void renderSingleFrame(ChartLoopContext& l) {
     cam.position.z = std::lerp(cam.position.z, desiredPos.z,    camFollow);
     cam.focusDistance = std::sqrt(camHeight * camHeight + camBackZ * camBackZ);
 
-    bool rebuildStatic = l.world->needsMeshUpload();
+    bool callbackRebuild = false;
     if (l.frameCallback) {
-        rebuildStatic = l.frameCallback(l.window, *l.world, dt) || rebuildStatic;
+        callbackRebuild = l.frameCallback(l.window, *l.world, dt);
     }
 
     l.world->updateSimulation(dt, l.ctx->targetWidth, l.ctx->targetHeight);
+    bool rebuildStatic = l.world->needsMeshUpload() || callbackRebuild;
     l.ctx->uploadWorldAndDynamicEntities(*l.world, rebuildStatic);
     l.world->clearMeshDirty();
 
@@ -3200,10 +3589,10 @@ int ChartRenderer::runInteractiveWindow(
               << "  K / Right Click         : Cast Arcane Nova (Map-Surface Telegraph)\n"
               << "  E / Enter               : Enter / Exit Watabou One-Page Dungeon\n"
               << "  T                       : Toggle Dynamic Day/Night Cycle\n"
+              << "  Y                       : Step Weather (Rain, Storm, Blizzard, Clear...)\n"
               << "  [ / ]                   : Step Time of Day (-1 hr / +1 hr)\n"
               << "  M / Z or Scroll Wheel   : Zoom-to-Atlas Cartographic View\n"
-              << "  1 / 2 / 3 / 4           : Switch Chart (1: Shattered Isles [Corsair's Haven], 2: Perilous Shores,\n"
-              << "                            3: Highland Kingdom, 4: Sunken Sanctum Dungeon)\n"
+              << "  1 / 2 / 3 / 4 / 5 / 6   : Switch Chart Preset / Dungeon\n"
               << "====================================================================\n\n";
 
     ChartLoopContext loop;
@@ -3211,6 +3600,10 @@ int ChartRenderer::runInteractiveWindow(
     loop.scriptEngine = &scriptEngine;
     loop.activeScript = watchedScriptPath;
     loop.foleyEngine = &foleyEngine;
+
+    world.setSoundCallback([&foleyEngine](uint16_t soundId, float intensity) {
+        foleyEngine.triggerSound(soundId, intensity);
+    });
     loop.window = window;
     loop.ctx = &ctx;
     loop.lastScriptWriteTime = lastScriptWriteTime;

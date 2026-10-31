@@ -1,5 +1,6 @@
 #include "eatscharted/chart_world.hpp"
 #include "eatscharted/cartographic_text.hpp"
+#include "eatscharted/audio_foley.hpp"
 #include "eatsbits/ui/glyph/vector_font.hpp"
 #include <chrono>
 #include <cmath>
@@ -9,6 +10,15 @@
 namespace eatscharted {
 
 namespace {
+
+[[nodiscard]] uint32_t hashU32(uint32_t x) noexcept {
+    x ^= x >> 16u;
+    x *= 0x7FEB352Du;
+    x ^= x >> 15u;
+    x *= 0x846CA68Bu;
+    x ^= x >> 16u;
+    return x;
+}
 
 [[nodiscard]] uint32_t hashPos(int x, int z, uint32_t seed) noexcept {
     uint32_t h = static_cast<uint32_t>(x) * 374761393u +
@@ -50,6 +60,7 @@ void ChartWorld::clear() {
     staticChunkLights_.clear();
     customPointLights_.clear();
     customBanners_.clear();
+    worldBanners_.clear();
     enemies_.clear();
     floatingNumbers_.clear();
     localeBanner_.active = false;
@@ -115,6 +126,31 @@ void ChartWorld::buildSunscorchedWastes(uint32_t seed) {
     triggerLocaleDiscovery(hero_.activeRegionName, hero_.activeRegionSub);
     camera_.target   = {hero_.pos.x, hero_.pos.y, hero_.pos.z};
     camera_.position = {hero_.pos.x, 28.0f, hero_.pos.z - 25.0f};
+}
+
+void ChartWorld::buildFrostfellPeaks(uint32_t seed) {
+    overworldReturnSeed_ = seed;
+    overworldReturnPreset_ = AtlasPreset::FrostfellPeaks;
+    generateCustomChart(seed, AtlasPreset::FrostfellPeaks);
+    hero_.pos = {-24.0f, 1.25f, -14.0f};
+    hero_.isSailing = false;
+    hero_.activeRegionName = "RIMEVALE HAMLET";
+    hero_.activeRegionSub  = "The Frostfell Reach";
+    triggerLocaleDiscovery(hero_.activeRegionName, hero_.activeRegionSub);
+    camera_.target   = {hero_.pos.x, hero_.pos.y, hero_.pos.z};
+    camera_.position = {hero_.pos.x, 28.0f, hero_.pos.z - 25.0f};
+
+    // Initialize atmospheric frosty polar mood
+    atmosphere_.skyZenith = {0.18f, 0.28f, 0.44f};
+    atmosphere_.skyHorizon = {0.72f, 0.78f, 0.88f};
+    atmosphere_.sunColor = {0.92f, 0.95f, 1.0f};
+    atmosphere_.fogDensity = 0.0035f;
+
+    // Start with delicate highland snow flurries and polar wind
+    weather_.type = WeatherType::Flurries;
+    weather_.intensity = 0.35f;
+    weather_.snowCover = 0.70f;
+    weather_.autoCycle = true;
 }
 
 void ChartWorld::buildContinentalPangaea(uint32_t seed) {
@@ -259,6 +295,7 @@ void ChartWorld::buildWatabouDungeon(uint32_t seed, DungeonTheme theme) {
     }
 
     dungeonExplicitDressing_ = false; // allows bakeChunk to auto-dress rooms, torches, and enemies
+    rebuildWorldBanners();
 }
 
 void ChartWorld::buildProceduralDungeon(uint32_t seed, DungeonTheme theme) {
@@ -274,6 +311,7 @@ void ChartWorld::generateCustomChart(uint32_t seed, AtlasPreset preset) {
     gridCenter_ = {0.0f, 0.0f};
     useDayNightCycle_ = true;
     voronoi_.generate(seed, preset);
+    rebuildWorldBanners();
 }
 
 void ChartWorld::addCustomStandee(Vec3f pos, float w, float h, uint16_t layer, uint32_t flags) {
@@ -292,8 +330,45 @@ void ChartWorld::addCustomStandee(Vec3f pos, float w, float h, uint16_t layer, u
     meshDirty_ = true;
 }
 
+void ChartWorld::rebuildWorldBanners() {
+    worldBanners_.clear();
+    worldBanners_.reserve(voronoi_.banners().size() + voronoi_.pois().size() + customBanners_.size());
+
+    // 1. Macro Regional & Oceanic Banners from Voronoi Atlas (authored grand curves across provinces)
+    for (const auto& b : voronoi_.banners()) {
+        if (!b.text.empty()) {
+            worldBanners_.push_back(b);
+        }
+    }
+
+    // 2. Landmark / Settlement POI Banners (fitted to terrain & de-conflicted against regional banners and each other)
+    for (const auto& poi : voronoi_.pois()) {
+        if (poi.name.empty()) continue;
+        bool isWaterPoi = (poi.category == PoiCategory::SunkenRuin || poi.category == PoiCategory::PortHarbor);
+        auto fit = CartographicPathText::fitBanner(
+            poi.name,
+            poi.pos,
+            2.2f, // Cat Quest hero scale (~2.2m)
+            voronoi_,
+            worldBanners_,
+            isWaterPoi,
+            /*isRegionHeader=*/false
+        );
+        worldBanners_.push_back(fit.banner);
+    }
+
+    // 3. Custom / Scripted Banners
+    for (const auto& b : customBanners_) {
+        if (!b.text.empty()) {
+            worldBanners_.push_back(b);
+        }
+    }
+}
+
 void ChartWorld::addCustomBanner(const std::string& text, Vec2f p0, Vec2f p1, Vec2f p2, float letterSize) {
     customBanners_.push_back(CurvedMapBanner{text, p0, p1, p2, letterSize, true, false});
+    rebuildWorldBanners();
+    meshDirty_ = true;
 }
 
 void ChartWorld::addPointLight(Vec3f pos, float radius, Vec3f color, float intensity) {
@@ -616,21 +691,6 @@ MapChunk ChartWorld::bakeChunk(int cx, int cz) {
                     }
                 }
             }
-
-            // Local POI calligraphic label ribbon directly on ground path in front of landmark (Cat Quest player scale)
-            float halfSpan = std::max(8.0f, static_cast<float>(p.name.size()) * 1.05f);
-            if (p.pos.x >= minX - halfSpan && p.pos.x <= maxX + halfSpan &&
-                p.pos.y >= minZ - 12.0f && p.pos.y <= maxZ + 12.0f) {
-                CurvedMapBanner poiBanner{};
-                poiBanner.text = p.name;
-                // Concave curve in front of landmark, facing camera
-                poiBanner.p0 = {p.pos.x - halfSpan, p.pos.y - 4.2f};
-                poiBanner.p1 = {p.pos.x,            p.pos.y - 6.6f};
-                poiBanner.p2 = {p.pos.x + halfSpan, p.pos.y - 4.2f};
-                poiBanner.letterSize = 2.2f; // Player scale (matches ~2.2m hero cat)
-                poiBanner.isRegionHeader = false;
-                emitBannerToChunk(poiBanner, ch.bannerVerts, minX, maxX, minZ, maxZ);
-            }
         }
 
         // Procedural Nature Standees (2.5D Trees, Grass Patches, Crag Rocks & Sea Stacks)
@@ -815,6 +875,66 @@ MapChunk ChartWorld::bakeChunk(int cx, int cz) {
                         gs.phaseOffset = std::fmod(std::abs(wx * 2.13f + wz * 1.79f), 6.28f);
                         ch.standees.push_back(gs);
                     }
+                } else if (s.biomePrimary == BiomeId::SnowyTundra) {
+                    if (h % 4u == 0u) {
+                        // Frost-laden boreal pine stand
+                        float scale = 2.7f + static_cast<float>(h & 3u) * 0.28f;
+                        StandeeInstance st{};
+                        st.worldPos[0] = wx; st.worldPos[1] = s.elevation; st.worldPos[2] = wz;
+                        st.width = scale; st.height = scale * 1.18f;
+                        st.texLayer = InkLayer::StandeeForestPine;
+                        st.flags = StandeeFlags::WindSway | StandeeFlags::PartableCanopy | StandeeFlags::PopUpTilt | flipFlag;
+                        st.phaseOffset = std::fmod(std::abs(wx * 1.37f + wz * 2.19f), 6.28f);
+                        ch.standees.push_back(st);
+                    } else if (h % 7u == 0u) {
+                        // Frost-rimed boulder / crag outcrop
+                        StandeeInstance st{};
+                        st.worldPos[0] = wx; st.worldPos[1] = s.elevation - 0.05f; st.worldPos[2] = wz;
+                        st.width = 2.0f; st.height = 2.2f;
+                        st.texLayer = ((h >> 2u) & 1u) ? InkLayer::StandeeRockOutcrop : InkLayer::StandeeRockPillar;
+                        st.flags = StandeeFlags::PopUpTilt | flipFlag;
+                        st.phaseOffset = std::fmod(std::abs(wx * 1.37f + wz * 2.19f), 6.28f);
+                        ch.standees.push_back(st);
+                    } else if (h % 11u == 0u) {
+                        // Ancient frost monolith / standing stone
+                        StandeeInstance st{};
+                        st.worldPos[0] = wx; st.worldPos[1] = s.elevation; st.worldPos[2] = wz;
+                        st.width = 1.8f; st.height = 2.6f;
+                        st.texLayer = InkLayer::StandeeStandingStone;
+                        st.flags = StandeeFlags::PopUpTilt | flipFlag;
+                        st.phaseOffset = std::fmod(std::abs(wx * 1.37f + wz * 2.19f), 6.28f);
+                        ch.standees.push_back(st);
+                    } else if (h % 13u == 0u) {
+                        // Winter grass tuft / tundra scrub
+                        StandeeInstance gs{};
+                        gs.worldPos[0] = wx; gs.worldPos[1] = s.elevation; gs.worldPos[2] = wz;
+                        gs.width = 1.2f; gs.height = 0.9f;
+                        gs.texLayer = InkLayer::StandeeGrassPatch;
+                        gs.flags = StandeeFlags::WindSway | StandeeFlags::NoShadow | flipFlag;
+                        gs.phaseOffset = std::fmod(std::abs(wx * 2.13f + wz * 1.79f), 6.28f);
+                        ch.standees.push_back(gs);
+                    }
+                } else if (s.biomePrimary == BiomeId::GlacialIce) {
+                    if (h % 9u == 0u) {
+                        // Jagged blue ice spire / rock pillar
+                        StandeeInstance st{};
+                        st.worldPos[0] = wx; st.worldPos[1] = s.elevation; st.worldPos[2] = wz;
+                        st.width = 2.2f + static_cast<float>(h & 3u) * 0.35f;
+                        st.height = st.width * 1.35f;
+                        st.texLayer = InkLayer::StandeeRockPillar;
+                        st.flags = StandeeFlags::PopUpTilt | flipFlag;
+                        st.phaseOffset = std::fmod(std::abs(wx * 1.37f + wz * 2.19f), 6.28f);
+                        ch.standees.push_back(st);
+                    } else if (h % 17u == 0u) {
+                        // Mystic frozen standing stone
+                        StandeeInstance st{};
+                        st.worldPos[0] = wx; st.worldPos[1] = s.elevation; st.worldPos[2] = wz;
+                        st.width = 1.9f; st.height = 2.7f;
+                        st.texLayer = InkLayer::StandeeStandingStone;
+                        st.flags = StandeeFlags::PopUpTilt | flipFlag;
+                        st.phaseOffset = std::fmod(std::abs(wx * 1.37f + wz * 2.19f), 6.28f);
+                        ch.standees.push_back(st);
+                    }
                 }
 
                 // Scatter wandering slimes and desert creatures in wilderness
@@ -823,7 +943,8 @@ MapChunk ChartWorld::bakeChunk(int cx, int cz) {
                     slime.pos = {wx, s.elevation, wz};
                     slime.homePos = slime.pos;
                     slime.standeeLayer = InkLayer::StandeeMonsterSlime;
-                    slime.name = (s.biomePrimary == BiomeId::AridSteppe || s.biomePrimary == BiomeId::BadlandsCanyon) ? "Dune Scuttler" : "Wild Ink Slime";
+                    slime.name = (s.biomePrimary == BiomeId::AridSteppe || s.biomePrimary == BiomeId::BadlandsCanyon) ? "Dune Scuttler" :
+                                 (s.biomePrimary == BiomeId::SnowyTundra || s.biomePrimary == BiomeId::GlacialIce) ? "Frost Slime" : "Wild Ink Slime";
                     slime.width = 1.9f; slime.height = 1.9f;
                     slime.hp = 40; slime.maxHp = 40;
                     slime.telegraphRadius = 3.2f;
@@ -832,24 +953,10 @@ MapChunk ChartWorld::bakeChunk(int cx, int cz) {
                 }
             }
         }
-
-        // Regional Calligraphic Banners
-        auto bannerIntersects = [&](const CurvedMapBanner& b) {
-            float bMinX = std::min({b.p0.x, b.p1.x, b.p2.x}) - 20.0f;
-            float bMaxX = std::max({b.p0.x, b.p1.x, b.p2.x}) + 20.0f;
-            float bMinZ = std::min({b.p0.y, b.p1.y, b.p2.y}) - 20.0f;
-            float bMaxZ = std::max({b.p0.y, b.p1.y, b.p2.y}) + 20.0f;
-            return (bMaxX >= minX && bMinX <= maxX && bMaxZ >= minZ && bMinZ <= maxZ);
-        };
-
-        for (const auto& b : voronoi_.banners()) {
-            if (bannerIntersects(b)) {
-                emitBannerToChunk(b, ch.bannerVerts, minX, maxX, minZ, maxZ);
-            }
-        }
     }
 
-    auto customBannerIntersects = [&](const CurvedMapBanner& b) {
+    // Cartographic 3D Curved Ground Banners (Landmark POIs, Regional Titles & Custom Banners)
+    auto bannerIntersects = [&](const CurvedMapBanner& b) {
         float bMinX = std::min({b.p0.x, b.p1.x, b.p2.x}) - 20.0f;
         float bMaxX = std::max({b.p0.x, b.p1.x, b.p2.x}) + 20.0f;
         float bMinZ = std::min({b.p0.y, b.p1.y, b.p2.y}) - 20.0f;
@@ -857,10 +964,59 @@ MapChunk ChartWorld::bakeChunk(int cx, int cz) {
         return (bMaxX >= minX && bMinX <= maxX && bMaxZ >= minZ && bMinZ <= maxZ);
     };
 
-    if (!voronoi_.isDungeonMode()) {
-        for (const auto& b : customBanners_) {
-            if (customBannerIntersects(b)) {
+    if (voronoi_.isDungeonMode()) {
+        // Watabou One-Page Dungeon room label banners on flagstone floors
+        for (const auto& rm : voronoi_.dungeonRooms()) {
+            if (rm.label.empty()) continue;
+            float cx_rm = (rm.minX + rm.maxX) * 0.5f;
+            float cz_rm = (rm.minZ + rm.maxZ) * 0.5f;
+            float rSpan = std::max(6.0f, static_cast<float>(rm.label.size()) * 0.95f);
+            if (cx_rm >= minX - rSpan && cx_rm <= maxX + rSpan &&
+                cz_rm >= minZ - 6.0f && cz_rm <= maxZ + 6.0f) {
+                CurvedMapBanner rmBanner{};
+                rmBanner.text = rm.label;
+                rmBanner.p0 = {cx_rm - rSpan, cz_rm - 1.2f};
+                rmBanner.p1 = {cx_rm,         cz_rm - 2.4f};
+                rmBanner.p2 = {cx_rm + rSpan, cz_rm - 1.2f};
+                rmBanner.letterSize = 1.9f;
+                rmBanner.isRegionHeader = false;
+                emitBannerToChunk(rmBanner, ch.bannerVerts, minX, maxX, minZ, maxZ);
+            }
+        }
+    } else {
+        // 1. Regional macro calligraphic banners (authored & procedural from Voronoi Atlas)
+        for (const auto& b : voronoi_.banners()) {
+            if (bannerIntersects(b)) {
                 emitBannerToChunk(b, ch.bannerVerts, minX, maxX, minZ, maxZ);
+            }
+        }
+
+        // 2. Custom scripted banners (from chart.add_banner / chart.add_curved_banner)
+        for (const auto& b : customBanners_) {
+            if (bannerIntersects(b)) {
+                emitBannerToChunk(b, ch.bannerVerts, minX, maxX, minZ, maxZ);
+            }
+        }
+
+        // 3. Local landmark / settlement POI ribbons (fitted to terrain with cliff drop avoidance & de-confliction)
+        for (const auto& p : voronoi_.pois()) {
+            if (p.name.empty()) continue;
+            float halfSpan = std::max(8.0f, static_cast<float>(p.name.size()) * 1.05f);
+            if (p.pos.x >= minX - halfSpan - 20.0f && p.pos.x <= maxX + halfSpan + 20.0f &&
+                p.pos.y >= minZ - 25.0f && p.pos.y <= maxZ + 25.0f) {
+                bool isWaterPoi = (p.category == PoiCategory::SunkenRuin || p.category == PoiCategory::PortHarbor);
+                auto fit = CartographicPathText::fitBanner(
+                    p.name,
+                    p.pos,
+                    2.2f, // Cat Quest hero scale (~2.2m)
+                    voronoi_,
+                    voronoi_.banners(),
+                    isWaterPoi,
+                    /*isRegionHeader=*/false
+                );
+                if (bannerIntersects(fit.banner)) {
+                    emitBannerToChunk(fit.banner, ch.bannerVerts, minX, maxX, minZ, maxZ);
+                }
             }
         }
     }
@@ -1007,6 +1163,9 @@ void ChartWorld::updateChunkStreaming(float heroX, float heroZ, bool forceRebuil
 }
 
 ChartStats ChartWorld::rebuildWorldGeometry(float centerWorldX, float centerWorldZ) {
+    if (worldBanners_.empty()) {
+        rebuildWorldBanners();
+    }
     updateChunkStreaming(centerWorldX, centerWorldZ, /*forceRebuild=*/true);
 
     ChartStats stats{};
@@ -1219,6 +1378,9 @@ void ChartWorld::moveHero(float moveX, float moveZ, bool sprintOrDodge, float dt
                     provSub  = "Uncharted Lands";
                 }
             }
+        } else if (hero_.pos.z > 85.0f && hero_.pos.x < -35.0f) {
+            provName = "THE FROSTFELL REACH";
+            provSub  = (s.biomePrimary == BiomeId::GlacialIce) ? "Blue Crevasse Glacier" : "Snowy Tundra & Ice Horns";
         } else if (hero_.pos.z > 85.0f) {
             provName = "THE REALM OF SILVERVALE";
             provSub  = "Highland Mountains";
@@ -1231,6 +1393,21 @@ void ChartWorld::moveHero(float moveX, float moveZ, bool sprintOrDodge, float dt
         } else if (hero_.pos.z < -85.0f) {
             provName = "THE SHATTERED SEA";
             provSub  = "Corsair's Atoll";
+        }
+        if (hero_.activeRegionName != provName) {
+            hero_.activeRegionName = provName;
+            hero_.activeRegionSub  = provSub;
+            triggerLocaleDiscovery(provName, provSub);
+        }
+    } else if (voronoi_.preset() == AtlasPreset::FrostfellPeaks) {
+        std::string provName = "RIMEVALE TUNDRA";
+        std::string provSub  = "The Frostfell Reach";
+        if (s.elevation > 5.5f) {
+            provName = "FROSTFELL PEAKS";
+            provSub  = "Glacial Summit Horns";
+        } else if (s.biomePrimary == BiomeId::GlacialIce) {
+            provName = "BLUE CREVASSE GLACIER";
+            provSub  = "Ancient Ice Shelf";
         }
         if (hero_.activeRegionName != provName) {
             hero_.activeRegionName = provName;
@@ -1343,8 +1520,15 @@ bool ChartWorld::tryToggleNearbyDungeon() {
                 hero_.activeRegionName = "AL-ZAHRA OASIS";
                 hero_.activeRegionSub  = "Sunscorched Wastes";
                 break;
+            case AtlasPreset::FrostfellPeaks:
+                hero_.activeRegionName = "RIMEVALE HAMLET";
+                hero_.activeRegionSub  = "The Frostfell Reach";
+                break;
             case AtlasPreset::ContinentalPangaea:
-                if (retPos.z > 85.0f) {
+                if (retPos.z > 85.0f && retPos.x < -35.0f) {
+                    hero_.activeRegionName = "THE FROSTFELL REACH";
+                    hero_.activeRegionSub  = "Glacial Expanse & Tundra";
+                } else if (retPos.z > 85.0f) {
                     hero_.activeRegionName = "THE REALM OF SILVERVALE";
                     hero_.activeRegionSub  = "Highland Mountains";
                 } else if (retPos.x > 85.0f) {
@@ -1539,6 +1723,92 @@ void ChartWorld::buildDynamicStandeesAndTelegraphs() {
     }
 }
 
+void ChartWorld::setWeatherType(WeatherType type, float intensity) noexcept {
+    weather_.type = type;
+    weather_.intensity = std::clamp(intensity, 0.0f, 1.0f);
+    weather_.autoCycle = false; // Manual lock override
+    if (type == WeatherType::Clear) {
+        weather_.lightningFlash = 0.0f;
+    }
+}
+
+ChartWorld::LocalWeatherInfo ChartWorld::evaluateLocalWeather(float wx, float wz) const noexcept {
+    LocalWeatherInfo info{};
+    info.type = weather_.type;
+    info.intensity = weather_.intensity;
+
+    if (voronoi_.isDungeonMode()) {
+        info.temperature = 14.0f; // Subterranean constant cool vault
+        info.precipitation = 0.0f;
+        info.snowFactor = 0.0f;
+        info.wetness = 0.0f;
+        info.intensity = 0.0f;
+        info.description = "Subterranean Vault";
+        return info;
+    }
+
+    ChartFieldSample s = voronoi_.sampleAt(wx, wz);
+    BiomeClimateProfile profile = getBiomeClimateProfile(s.biomePrimary);
+
+    // Continental province thermal baseline
+    float baseTemp = profile.baseTemp;
+    const float dHighlands = (wx * wx + (wz - 190.0f) * (wz - 190.0f));
+    const float dDesert    = ((wx - 190.0f) * (wx - 190.0f) + wz * wz);
+    if (dHighlands < 150.0f * 150.0f) {
+        float tH = 1.0f - std::sqrt(dHighlands) / 150.0f;
+        baseTemp = (1.0f - tH) * baseTemp + tH * 2.0f; // Cool Silvervale highlands
+    } else if (dDesert < 150.0f * 150.0f) {
+        float tD = 1.0f - std::sqrt(dDesert) / 150.0f;
+        baseTemp = (1.0f - tD) * baseTemp + tD * 34.0f; // Hot Sunscorched Expanse
+    }
+
+    // Atmospheric lapse rate: ~1.65°C drop per meter of tabletop elevation
+    info.temperature = baseTemp - s.elevation * 1.65f;
+
+    // Precipitation scaling based on global weather type and biome humidity
+    float globalPrecip = 0.0f;
+    switch (weather_.type) {
+        case WeatherType::Drizzle:      globalPrecip = 0.35f; break;
+        case WeatherType::Downpour:     globalPrecip = 0.80f; break;
+        case WeatherType::Thunderstorm: globalPrecip = 1.00f; break;
+        case WeatherType::Flurries:     globalPrecip = 0.35f; break;
+        case WeatherType::Blizzard:     globalPrecip = 1.00f; break;
+        case WeatherType::Sandstorm:    globalPrecip = 0.70f; break;
+        default:                        globalPrecip = 0.0f; break;
+    }
+    info.precipitation = std::clamp(globalPrecip * weather_.intensity * profile.humidityMult, 0.0f, 1.0f);
+
+    // Thermodynamic state classification:
+    // If cold enough (T <= 0°C), rain converts to snow!
+    if (info.temperature <= 0.0f) {
+        if (info.precipitation > 0.02f) {
+            if (info.precipitation > 0.60f) {
+                info.type = WeatherType::Blizzard;
+                info.snowFactor = std::min(1.0f, info.precipitation * 1.25f);
+                info.description = "Alpine Mountain Blizzard";
+            } else {
+                info.type = WeatherType::Flurries;
+                info.snowFactor = std::min(1.0f, info.precipitation * 1.10f);
+                info.description = (weather_.intensity <= 0.25f) ? "Delicate Light Snow" : "Highland Snow Flurries";
+            }
+        } else {
+            info.snowFactor = std::clamp((-info.temperature) / 8.0f, 0.0f, 0.6f);
+            info.description = (s.elevation >= profile.minSnowAltitude) ? "Frosty Snow Chill" : "Freezing Mist";
+        }
+    } else if (profile.baseTemp > 26.0f && profile.humidityMult < 0.25f && info.precipitation > 0.20f) {
+        // In arid desert, storms create sandstorms/haboobs
+        info.type = WeatherType::Sandstorm;
+        info.snowFactor = 0.0f;
+        info.description = "Sunscorched Sandstorm";
+    } else {
+        info.snowFactor = 0.0f;
+        info.description = weatherTypeName(info.type);
+    }
+
+    info.wetness = weather_.wetness;
+    return info;
+}
+
 void ChartWorld::updateSimulation(float dt, uint32_t viewportW, uint32_t viewportH) {
     servicePendingChunkBakes();
     simTimeSec_ += dt;
@@ -1546,6 +1816,90 @@ void ChartWorld::updateSimulation(float dt, uint32_t viewportW, uint32_t viewpor
         atmosphere_.timeOfDay = std::fmod(atmosphere_.timeOfDay + dt * dayCycleSpeed_, 1.0f);
         if (atmosphere_.timeOfDay < 0.0f) atmosphere_.timeOfDay += 1.0f;
     }
+
+    // Procedural Weather Progression & Environmental Dynamics
+    if (weather_.autoCycle && !voronoi_.isDungeonMode()) {
+        weatherCycleTimer_ += dt * weather_.cycleSpeed;
+        if (weatherCycleTimer_ >= 1.0f) weatherCycleTimer_ -= 1.0f;
+
+        ChartFieldSample heroSample = voronoi_.sampleAt(hero_.pos.x, hero_.pos.z);
+        BiomeClimateProfile profile = getBiomeClimateProfile(heroSample.biomePrimary);
+
+        float tVal = weatherCycleTimer_;
+        float wSum = 0.0f;
+        for (float w : profile.weatherWeights) wSum += w;
+
+        WeatherType chosenType = profile.defaultWeather;
+        float chosenIntensity = 0.0f;
+
+        if (wSum > 1e-4f) {
+            float normT = tVal * wSum;
+            float acc = 0.0f;
+            for (size_t wi = 0; wi < profile.weatherWeights.size(); ++wi) {
+                float nextAcc = acc + profile.weatherWeights[wi];
+                if (normT >= acc && normT < nextAcc) {
+                    chosenType = static_cast<WeatherType>(wi);
+                    float span = std::max(0.01f, profile.weatherWeights[wi]);
+                    float localP = (normT - acc) / span;
+                    chosenIntensity = std::sin(localP * 3.14159265f);
+                    break;
+                }
+                acc = nextAcc;
+            }
+        }
+
+        weather_.type = chosenType;
+        if (chosenType == WeatherType::Clear) {
+            weather_.intensity = 0.0f;
+        } else if (chosenType == WeatherType::Flurries) {
+            weather_.intensity = std::clamp(chosenIntensity * 0.40f + 0.15f, 0.15f, 0.60f);
+        } else if (chosenType == WeatherType::Drizzle) {
+            weather_.intensity = std::clamp(chosenIntensity * 0.35f + 0.15f, 0.15f, 0.55f);
+        } else {
+            weather_.intensity = std::clamp(chosenIntensity * 0.65f + 0.35f, 0.35f, 1.0f);
+        }
+    }
+
+    // Evaluate local climate conditions around the hero
+    LocalWeatherInfo heroWeather = evaluateLocalWeather(hero_.pos.x, hero_.pos.z);
+
+    // Dynamic ground wetness accumulation & drying (liquid rain accumulates puddles, snow does not)
+    if (heroWeather.precipitation > 0.05f && heroWeather.temperature > 0.0f) {
+        weather_.wetness = std::min(1.0f, weather_.wetness + dt * 0.14f * heroWeather.precipitation);
+    } else {
+        weather_.wetness = std::max(0.0f, weather_.wetness - dt * 0.038f);
+    }
+
+    // Dynamic snowline descent & accumulation
+    if (heroWeather.snowFactor > 0.05f) {
+        weather_.snowCover = std::min(1.0f, weather_.snowCover + dt * 0.18f * heroWeather.snowFactor);
+    } else {
+        weather_.snowCover = std::max(0.0f, weather_.snowCover - dt * 0.045f);
+    }
+
+    // Ocean storm surge / wave chop
+    if (weather_.type == WeatherType::Thunderstorm) {
+        weather_.stormSurge = std::min(1.0f, weather_.stormSurge + dt * 0.30f);
+    } else {
+        weather_.stormSurge = std::max(0.0f, weather_.stormSurge - dt * 0.12f);
+    }
+
+    // Lightning Flash Scheduler during Thunderstorms
+    if (weather_.type == WeatherType::Thunderstorm && !voronoi_.isDungeonMode()) {
+        lightningTimer_ -= dt;
+        if (lightningTimer_ <= 0.0f) {
+            weather_.lightningFlash = 1.0f;
+            uint32_t seedFlash = hashU32(static_cast<uint32_t>(simTimeSec_ * 100.0f));
+            lightningTimer_ = 3.2f + static_cast<float>(seedFlash % 100) * 0.045f; // 3.2s to 7.7s
+            if (soundCb_) {
+                soundCb_(FoleySound::ThunderClap, 0.95f);
+            }
+        }
+    }
+    if (weather_.lightningFlash > 0.0f) {
+        weather_.lightningFlash = std::max(0.0f, weather_.lightningFlash - dt * 7.5f);
+    }
+
     if (hero_.attackTimer > 0.0f) hero_.attackTimer = std::max(0.0f, hero_.attackTimer - dt);
     if (hero_.spellTimer > 0.0f)  hero_.spellTimer  = std::max(0.0f, hero_.spellTimer - dt);
 
@@ -1664,10 +2018,11 @@ void ChartWorld::buildHudAndMapOverlay(uint32_t viewportW, uint32_t viewportH) {
     overlay2D_.drawRoundedRectOutline(barX, barY, barW, barH, 6.0f, 0.82f, 0.68f, 0.42f, 0.92f, 1.5f);
 
     // Left: Active Region / POI Title & Cartographic Time of Day Watch
-    char watchBuf[96];
+    char watchBuf[128];
     int hour = static_cast<int>(atmosphere_.timeOfDay * 24.0f) % 24;
     int minute = static_cast<int>(std::fmod(atmosphere_.timeOfDay * 1440.0f, 60.0f));
-    std::snprintf(watchBuf, sizeof(watchBuf), " - %02d:%02d [%s]", hour, minute, AtmosphereConfig::timePeriodName(atmosphere_.timeOfDay));
+    LocalWeatherInfo heroWtr = evaluateLocalWeather(hero_.pos.x, hero_.pos.z);
+    std::snprintf(watchBuf, sizeof(watchBuf), " - %02d:%02d [%s | %s]", hour, minute, AtmosphereConfig::timePeriodName(atmosphere_.timeOfDay), heroWtr.description);
 
     std::string regionHeader = hero_.activeRegionName + (hero_.isSailing ? " [SAILING]" : "");
     std::string subTitle = hero_.activeRegionSub + watchBuf;
@@ -1681,7 +2036,7 @@ void ChartWorld::buildHudAndMapOverlay(uint32_t viewportW, uint32_t viewportH) {
     eatsbits::ui::glyph::drawVectorText(overlay2D_, barX + barW - statW - 16.0f, barY + 9.0f, 13.0f, statBuf, 0.98f, 0.82f, 0.38f, 1.0f);
 
     if (barW >= 620.0f) {
-        const char* ctrlHint = "WASD:Move  SPACE:Slash  K:Spell  T:Day/Night  [/]:Time  E:Dungeon  M:Atlas  1-4:Charts";
+        const char* ctrlHint = "WASD:Move  SPACE:Slash  K:Spell  T:Day/Night  Y:Weather  [/]:Time  E:Dungeon  M:Atlas  1-6:Charts";
         float hintW = eatsbits::ui::glyph::getVectorTextWidth(10.0f, ctrlHint);
         eatsbits::ui::glyph::drawVectorText(overlay2D_, barX + barW - hintW - 16.0f, barY + 27.0f, 10.0f, ctrlHint, 0.76f, 0.74f, 0.68f, 0.9f);
     }

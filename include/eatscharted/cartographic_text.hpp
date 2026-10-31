@@ -16,6 +16,16 @@ struct PathPoint {
 };
 
 /**
+ * Result of fitting a cartographic banner into the terrain, de-conflicting against
+ * other labels and ensuring it does not fall off cliffs or cross water boundaries.
+ */
+struct TextFitResult {
+    CurvedMapBanner banner;
+    bool fitsValidly{true};
+    float elevationVariance{0.0f};
+};
+
+/**
  * @brief High-performance Cat Quest & Perilous Shores Ground Path Text Renderer.
  *
  * Renders large, crisp, hand-inked cartographic serif titles directly onto the tabletop parchment
@@ -34,6 +44,18 @@ public:
 
     /// Generates path points along a quadratic Bezier spline
     static std::vector<PathPoint> generateBezierPath(Vec2f p0, Vec2f p1, Vec2f p2, int samples = 48);
+
+    /// Optimizes banner placement (position, orientation, span, and size) to avoid
+    /// overlapping existing banners and avoid falling off steep cliffs or water edges.
+    static TextFitResult fitBanner(
+        const std::string& text,
+        Vec2f anchorPos,
+        float targetLetterSize,
+        const VoronoiAtlas& atlas,
+        const std::vector<CurvedMapBanner>& existingBanners,
+        bool isWaterTitle = false,
+        bool isRegionHeader = false
+    );
 
     /// Emits 3D ground-draped vector stroke quads for a string along a given path
     static void emitTextAlongPath(

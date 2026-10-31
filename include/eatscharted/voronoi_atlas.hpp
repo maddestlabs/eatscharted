@@ -16,7 +16,8 @@ enum class AtlasPreset : uint8_t {
     HighlandKingdom      = 2, // Deep river valley, royal trade roads, twin citadels & alpine peaks
     OnePageDungeon       = 3, // Watabou One-Page Dungeon cross-hatched subterranean sanctum
     SunscorchedWastes    = 4, // Arid dunes, sandstone mesas, desert canyons, palm oasis & ancient tombs
-    ContinentalPangaea   = 5  // Seamless unified overland continent combining all biomes
+    ContinentalPangaea   = 5, // Seamless unified overland continent combining all biomes
+    FrostfellPeaks       = 6  // Glacial ice sheets, frost-rimed tundra, crevasse fields & alpine ice horns
 };
 
 /**
@@ -86,20 +87,6 @@ struct ChartPoi {
     int questLevel{1};
 };
 
-/**
- * Curved Calligraphic Map Banner laid out along a Quadratic Bezier spline (P0 -> P1 -> P2)
- * directly on the parchment map surface (Watabou Perilous Shores + Cat Quest style).
- */
-struct CurvedMapBanner {
-    std::string text;
-    Vec2f p0{0.0f, 0.0f};
-    Vec2f p1{0.0f, 0.0f};
-    Vec2f p2{0.0f, 0.0f};
-    float letterSize{2.4f};     // World-space height in meters
-    bool isRegionHeader{true};  // true = large arched region title, false = town ribbon banner
-    bool isWaterTitle{false};   // Italicized/spaced sea & bay nomenclature
-};
-
 enum class DungeonTheme : uint8_t {
     Auto            = 0,
     SunkenSanctum   = 1, // Flooded antique teal cistern, water pools, wyrm boss
@@ -157,6 +144,8 @@ public:
     // Parameterized province evaluation (allowing biomes to be offset anywhere in continental space)
     [[nodiscard]] float rawElevationDesert(float wx, float wz, Vec2f center = {0.0f, 0.0f}, float radius = 96.0f) const noexcept;
     [[nodiscard]] float rawMoistureDesert(float wx, float wz, Vec2f center = {0.0f, 0.0f}, float radius = 96.0f) const noexcept;
+    [[nodiscard]] float rawElevationFrostfell(float wx, float wz, Vec2f center = {0.0f, 0.0f}, float radius = 96.0f) const noexcept;
+    [[nodiscard]] float rawMoistureFrostfell(float wx, float wz, Vec2f center = {0.0f, 0.0f}, float radius = 96.0f) const noexcept;
     [[nodiscard]] float rawElevationContinental(float wx, float wz) const noexcept;
     [[nodiscard]] float rawMoistureContinental(float wx, float wz) const noexcept;
 

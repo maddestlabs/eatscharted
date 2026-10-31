@@ -13,6 +13,9 @@ namespace FoleySound {
     constexpr uint16_t ArcaneNova    = 2;
     constexpr uint16_t OceanSplash   = 3;
     constexpr uint16_t DungeonPortal = 4;
+    constexpr uint16_t ThunderClap   = 5;
+    constexpr uint16_t RainPatter    = 6;
+    constexpr uint16_t WindGust      = 7;
 } // namespace FoleySound
 
 /**

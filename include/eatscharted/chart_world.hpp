@@ -109,6 +109,7 @@ public:
     void buildShatteredArchipelago(uint32_t seed = 1715u);
     void buildHighlandKingdom(uint32_t seed = 1337u);
     void buildSunscorchedWastes(uint32_t seed = 1066u);
+    void buildFrostfellPeaks(uint32_t seed = 1845u);
     void buildContinentalPangaea(uint32_t seed = 2026u);
     void buildOnePageDungeon(uint32_t seed = 999u, DungeonTheme theme = DungeonTheme::Auto);
     void generateCustomChart(uint32_t seed, AtlasPreset preset);
@@ -163,6 +164,7 @@ public:
     [[nodiscard]] uint32_t staticStandeeCount() const noexcept { return static_cast<uint32_t>(staticStandees_.size()); }
     [[nodiscard]] const std::vector<CombatTelegraph>& telegraphs() const noexcept { return activeTelegraphs_; }
     [[nodiscard]] const std::vector<PointLight>& pointLights() const noexcept { return pointLights_; }
+    [[nodiscard]] const std::vector<CurvedMapBanner>& worldBanners() const noexcept { return worldBanners_; }
     [[nodiscard]] const eatsbits::ui::BatchRenderer2D& overlay2D() const noexcept { return overlay2D_; }
 
     [[nodiscard]] HeroState& hero() noexcept { return hero_; }
@@ -182,6 +184,25 @@ public:
     [[nodiscard]] float dayCycleSpeed() const noexcept { return dayCycleSpeed_; }
     void setDayCycleSpeed(float speed) noexcept { dayCycleSpeed_ = speed; }
 
+    [[nodiscard]] WeatherConfig& weather() noexcept { return weather_; }
+    [[nodiscard]] const WeatherConfig& weather() const noexcept { return weather_; }
+    void setWeather(const WeatherConfig& w) noexcept { weather_ = w; }
+    void setWeatherType(WeatherType type, float intensity = 1.0f) noexcept;
+
+    struct LocalWeatherInfo {
+        WeatherType type{WeatherType::Clear};
+        float temperature{18.0f};   // Tabletop ambient temp in °C
+        float precipitation{0.0f}; // 0.0 to 1.0
+        float snowFactor{0.0f};    // 0.0 to 1.0 (freezing snow / blizzard)
+        float wetness{0.0f};       // 0.0 to 1.0 (puddles / saturated paper)
+        float intensity{0.0f};     // 0.0 to 1.0 continuous precipitation intensity
+        const char* description{"Fair Sky"};
+    };
+    [[nodiscard]] LocalWeatherInfo evaluateLocalWeather(float wx, float wz) const noexcept;
+
+    using SoundTriggerCallback = std::function<void(uint16_t soundId, float intensity)>;
+    void setSoundCallback(SoundTriggerCallback cb) noexcept { soundCb_ = std::move(cb); }
+
     static constexpr float kChunkSize{32.0f};
     static constexpr int kChunkRadius{2}; // 5x5 chunk grid = 160m x 160m active window (25 chunks)
 
@@ -194,6 +215,7 @@ private:
     void servicePendingChunkBakes();
     void assembleActiveMesh();
     MapChunk bakeChunk(int cx, int cz);
+    void rebuildWorldBanners();
     void emitBannerToChunk(const CurvedMapBanner& b, std::vector<ChartVertex>& outVerts,
                            float minX, float maxX, float minZ, float maxZ);
 
@@ -226,6 +248,7 @@ private:
     std::vector<PointLight> staticChunkLights_;
     std::vector<PointLight> customPointLights_;
     std::vector<CurvedMapBanner> customBanners_;
+    std::vector<CurvedMapBanner> worldBanners_;
     std::vector<StandeeInstance> customStandees_;
 
     HeroState hero_;
@@ -234,6 +257,10 @@ private:
 
     CameraConfig camera_;
     AtmosphereConfig atmosphere_;
+    WeatherConfig weather_;
+    float weatherCycleTimer_{0.0f};
+    float lightningTimer_{4.2f};
+    SoundTriggerCallback soundCb_{nullptr};
     bool useDayNightCycle_{true};
     bool dungeonExplicitDressing_{false};
     float dayCycleSpeed_{1.0f / 180.0f}; // 1 full cycle per 3 minutes (180 seconds)

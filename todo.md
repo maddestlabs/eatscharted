@@ -239,4 +239,132 @@
     - Attached resize handlers to `window.resize`, `orientationchange`, and `window.visualViewport.resize`.
     - Added letterbox click-focus forwarder on `#canvas-container` so clicking outside the 16:9 canvas maintains keyboard and mouse focus.
 
+---
+
+## Phase 11: Dynamic Cartographic Weather & Thermodynamic Climate System
+
+- [x] **11.1 Thermodynamic Climate Model & Elevation Lapse Rate**
+  - Files: [`include/eatscharted/chart_types.hpp`](file:///c:/git/eatscharted/include/eatscharted/chart_types.hpp), [`include/eatscharted/chart_world.hpp`](file:///c:/git/eatscharted/include/eatscharted/chart_world.hpp), [`src/world/chart_world.cpp`](file:///c:/git/eatscharted/src/world/chart_world.cpp)
+  - Implemented `WeatherType` (Clear, Overcast, Drizzle, Downpour, Thunderstorm, Flurries, Blizzard, Sandstorm) and `WeatherConfig`.
+  - Implemented `ChartWorld::evaluateLocalWeather(wx, wz)`:
+    - Continental province baseline thermal model: warm Sunscorched Expanse ($34^\circ\text{C}$), temperate crossroads ($18^\circ\text{C}$), cold Silvervale highlands ($4^\circ\text{C}$).
+    - Orographic lapse rate: $-1.65^\circ\text{C}$ drop per meter of tabletop height, freezing mountain summits ($T \le 0^\circ\text{C}$) into snow flurries and blizzards.
+    - Arid waste condition: low-moisture regions convert storm systems into ochre dust sandstorms.
+  - Implemented automatic 4-minute cyclical weather front progression and dynamic wetness/snowcover accumulation.
+
+- [x] **11.2 Cartographic Surface Shading & Weather Reactions**
+  - File: [`src/render/chart_renderer.cpp`](file:///c:/git/eatscharted/src/render/chart_renderer.cpp)
+  - Extended `SceneUniforms` across C++ and all 4 WebGPU WGSL shaders with `weatherParams` (`wetness`, `snowCover`, `stormSurge`, `lightningFlash`) and `windDirection`.
+  - `fs_world`:
+    - Dynamic snowline descent during blizzards and cold fronts, accumulating snow on foothills and plateaus.
+    - Saturated watercolor paper wetness darkening and procedural concentric ink puddle ripples on flat terrain.
+    - Dynamic storm swell surge and wave chopping on ocean water.
+    - Blue-white lightning strike flash illumination across terrain relief and standees.
+  - `fs_sky`: Lightning illumination flashing across sky background during tempests.
+  - `vs_sprite`: Wind gusts and storm surges amplifying foliage standee swaying.
+
+- [x] **11.3 Procedural Audio Foley & Interactive Controls**
+  - Files: [`include/eatscharted/audio_foley.hpp`](file:///c:/git/eatscharted/include/eatscharted/audio_foley.hpp), [`src/audio/audio_foley.cpp`](file:///c:/git/eatscharted/src/audio/audio_foley.cpp), [`src/render/chart_renderer.cpp`](file:///c:/git/eatscharted/src/render/chart_renderer.cpp), [`src/world/script_bindings.cpp`](file:///c:/git/eatscharted/src/world/script_bindings.cpp)
+  - Added procedural miniaudio synthesizers for `ThunderClap` (deep low-frequency rolling rumble), `RainPatter` (high-frequency white-noise flutter), and `WindGust` (sweeping bandpass whoosh).
+  - Attached decoupling `soundCb_` in `ChartWorld` to trigger thunder rumbles on lightning strikes.
+  - Added interactive `Y` key shortcut to cycle through all weather cycles on demand with discovery toasts and Foley playback.
+  - Registered Eatscript DSL commands: `chart.set_weather(type, intensity)`, `chart.set_weather_cycle(enabled, speed)`, and `chart.get_weather()`.
+
+- [x] **11.4 Camera-Frustum Bounded Instanced Weather Particles**
+  - File: [`src/render/chart_renderer.cpp`](file:///c:/git/eatscharted/src/render/chart_renderer.cpp)
+  - Created `weatherParticlePipeline` integrated into Pass 2 (`scenePass`) with alpha blending and depth testing.
+  - 100% GPU-evaluated particle kinematics running in vertex shader (`vs_weather_particles`):
+    - Rain streaks: stretched along velocity vector $\vec{V} = (W_x, -v_y, W_z)$, rendered with India-ink needle shading.
+    - Snow flakes: tumbling cut-paper hexagonal/diamond quads with harmonic sinusoidal lateral drift and camera-facing rotation.
+    - Sandstorm dust: swirling ochre flecks drifting with desert gale winds.
+    - 3D modulo wrapping inside a camera-pinned $48\text{m} \times 26\text{m} \times 48\text{m}$ bounding volume, giving infinite seamless coverage with zero CPU allocations or buffer uploads.
+
+- [x] **11.5 Biome-Tethered Climate Profiles, Continuous Intensity & Sea Phase Stability**
+  - Files: [`include/eatscharted/chart_types.hpp`](file:///c:/git/eatscharted/include/eatscharted/chart_types.hpp), [`include/eatscharted/chart_world.hpp`](file:///c:/git/eatscharted/include/eatscharted/chart_world.hpp), [`src/world/chart_world.cpp`](file:///c:/git/eatscharted/src/world/chart_world.cpp), [`src/render/chart_renderer.cpp`](file:///c:/git/eatscharted/src/render/chart_renderer.cpp), [`src/world/script_bindings.cpp`](file:///c:/git/eatscharted/src/world/script_bindings.cpp), [`src/procgen/procedural_names.cpp`](file:///c:/git/eatscharted/src/procgen/procedural_names.cpp)
+  - **Biome Climate System**: Defined `BiomeClimateProfile` with base sea-level temperatures, humidity multipliers, minimum snowline altitudes, and probabilistic weather front transition tables for every biome (meadows, taiga, alpine peaks, desert, ocean, and prepped upcoming `SnowyTundra` & `GlacialIce`).
+  - **Natural Weather Front Cycling**: `updateSimulation` maps cyclical weather progression through the active biome's climate weights, naturally transitioning between sun, clouds, showers, snow flurries, and blizzards according to the local terrain.
+  - **Continuous Parameter Control for "Light Snow"**:
+    - Passed continuous `intensity` parameter $[0.0, 1.0]$ through `SceneUniforms`.
+    - Vertex shader performs dynamic particle density culling (`seedA > intensity`), scaling active count from a few dozen flakes to full blizzard density.
+    - Particle scale ($0.06\text{m} - 0.24\text{m}$) and alpha ($0.35 - 0.88$) scale smoothly with intensity, enabling fine-grained control over delicate light flurries.
+    - Added `"light_snow"` DSL alias and exposed `intensity` & `precipitation` in `chart.get_weather`.
+  - **Sea Wave Phase Invariance**: Fixed instantaneous wave speed-up artifact by locking wave angular phase rates constant over time and modulating amplitude + blending a high-frequency choppy wind octave via `stormSurge`.
+
+---
+
+## Phase 12: Icy & Snowy Terrain Generation, Glacial Shader Shading & The Frostfell Reach Scene Recipe
+
+- [x] **12.1 Procedural Glacial & Arctic Topography Engine**
+  - Files: [`include/eatscharted/voronoi_atlas.hpp`](file:///c:/git/eatscharted/include/eatscharted/voronoi_atlas.hpp), [`src/procgen/voronoi_atlas.cpp`](file:///c:/git/eatscharted/src/procgen/voronoi_atlas.cpp)
+  - Added `AtlasPreset::FrostfellPeaks` to atlas preset enumerations.
+  - Implemented parameterized `rawElevationFrostfell(wx, wz, center, radius)` and `rawMoistureFrostfell(wx, wz, center, radius)` designed for both standalone generation and seamless modular embedding into future overland continent expansions.
+  - Sculpted distinct geological formations:
+    - Soaring alpine horns and serrated arête ridges in the north/northwest using power-sharpened ridged fractal noise.
+    - Broad U-shaped glacial valley and trough carved by ancestral ice flow.
+    - Sunken glacial crevasse basin where thick deep-blue ice sheets pool.
+    - Windblown sastrugi snowdrift undulations across the tundra plains.
+    - Circular permafrost pingos (frost-heaved mounds) rising 2m above the tundra.
+  - Continuous biome assignment in `sampleAt`: mapping high summits to `BiomeId::AlpinePeak`, deep depressions to `BiomeId::GlacialIce`, sheltered valley slopes to `BiomeId::TaigaPines`, and rolling permafrost plains to `BiomeId::SnowyTundra`.
+
+- [x] **12.2 Cartographic Glacial Ice & Snowy Tundra Surface Shading**
+  - File: [`src/render/chart_renderer.cpp`](file:///c:/git/eatscharted/src/render/chart_renderer.cpp)
+  - Extended vertex shader (`vs_world`) with continuous `tundraFactor` (`landBiome == 13u`) and `iceFactor` (`landBiome == 14u`) interpolation passed via `terrainParams.z` and `terrainParams.w`.
+  - Added dedicated fragment shader (`fs_world`) rendering passes:
+    - **Glacial Ice Sheets**: Translucent azure/cyan watercolor wash, glossy specular glint catching directional sunlight, and procedural crevasse fracture chasms in crisp India ink with cerulean subsurface edge glow.
+    - **Frost-Rimed Snowy Tundra**: Soft white parchment snow wash, directional wind-sculpted sastrugi wave shading, permafrost ice-wedge polygonal ground crack inking, and windswept arctic lichen/moss knolls.
+
+- [x] **12.3 Frostfell Thematic POIs, Standees, Sled Roads & Banners**
+  - Files: [`include/eatscharted/chart_world.hpp`](file:///c:/git/eatscharted/include/eatscharted/chart_world.hpp), [`src/world/chart_world.cpp`](file:///c:/git/eatscharted/src/world/chart_world.cpp), [`src/procgen/voronoi_atlas.cpp`](file:///c:/git/eatscharted/src/procgen/voronoi_atlas.cpp)
+  - Added landmark POIs: *Frostguard Citadel*, *Rimevale Hamlet*, *Starfall Ice Spire*, *Glacial Crevasse Delve*, *Runed Ice Monolith*, and *White Wyrm's Cavern*.
+  - Added glacial meltwater stream running from northwest ice horns through the U-valley into the glacial basin.
+  - Synthesized curved sled highway and mountain trail splines connecting settlements and delves.
+  - Placed 3D arched calligraphic map banners: `"THE FROSTFELL REACH"`, `"BLUE CREVASSE GLACIER"`, and `"RIMEVALE TUNDRA"`.
+  - Added procedural biome standee populations in `bakeChunk`: frost-laden boreal pines (`StandeeForestPine`), frost crag outcrops (`StandeeRockOutcrop`), ancient rune monoliths (`StandeeStandingStone`), winter scrub patches (`StandeeGrassPatch`), and roaming frost slimes (*Frost Slime*).
+  - Integrated dynamic provincial boundary detection in `moveHero` and dungeon return preset transitions in `tryToggleNearbyDungeon`.
+
+- [x] **12.4 Eatscript DSL Bindings & Standalone Scene Recipe**
+  - Files: [`src/world/script_bindings.cpp`](file:///c:/git/eatscharted/src/world/script_bindings.cpp), [`scenes/frostfell_peaks.eats`](file:///c:/git/eatscharted/scenes/frostfell_peaks.eats)
+  - Registered `chart.build_frostfell_peaks(seed=...)` in the Eatscript DSL evaluator.
+  - Implemented `ChartWorld::buildFrostfellPeaks(seed)` initializing atmospheric polar lighting (cool cyan horizon, crisp white sunlight) and gentle flurries weather front (`WeatherType::Flurries`).
+  - Created standalone runnable scene recipe: [`scenes/frostfell_peaks.eats`](file:///c:/git/eatscharted/scenes/frostfell_peaks.eats).
+
+---
+
+## Phase 13: Continental Overworld Revamp (Frostfell Reach Integration & Physical Hydrology)
+
+- [x] **13.1 Continental Six-Province Cartographic Architecture**
+  - Files: [`include/eatscharted/voronoi_atlas.hpp`](file:///c:/git/eatscharted/include/eatscharted/voronoi_atlas.hpp), [`src/procgen/voronoi_atlas.cpp`](file:///c:/git/eatscharted/src/procgen/voronoi_atlas.cpp)
+  - Re-architected `rawElevationContinental` and `rawMoistureContinental` with 6 Gaussian provincial centers:
+    - **The Frostfell Reach (NW):** Center `(-125, 190)`, radius $170\text{m}$.
+    - **The Realm of Silvervale (NE):** Center `(65, 195)`, radius $150\text{m}$.
+    - **The Sunscorched Expanse (E):** Center `(190, 0)`, radius $175\text{m}$.
+    - **Kildland & The Perilous Shores (W):** Center `(-185, -25)`, radius $160\text{m}$.
+    - **The Shattered Archipelago (S):** Center `(0, -190)`, radius $160\text{m}$.
+    - **The Imperial Crossroads (Center):** Center `(0, 0)`, radius $125\text{m}$.
+  - Continuous multi-biome assignment in `sampleAt`: mapping high glacial horns and alpine ridges to `BiomeId::AlpinePeak`, deep glacial cirques to `BiomeId::GlacialIce`, sheltered evergreen slopes to `BiomeId::TaigaPines`, and permafrost plains to `BiomeId::SnowyTundra`, with frozen sea shelf ice.
+
+- [x] **13.2 Physical Downhill Gradient Hydrological River Tracing**
+  - File: [`src/procgen/voronoi_atlas.cpp`](file:///c:/git/eatscharted/src/procgen/voronoi_atlas.cpp)
+  - Replaced hardcoded static Bézier splines with dynamic physical downhill gradient descent (`traceHydrologicalRiver`):
+    - Traced via local descent vector $\vec{D} = -\nabla h(x, z) + \text{momentum} \cdot \vec{V} + \text{meander} \cdot \vec{N}$.
+    - Adaptive sinuous meandering scaling with slope (higher sinuosity in flat plains, direct incised rushing in mountain canyons).
+    - Leopold-Maddock river width progression from mountain brooks ($1.2\text{m}$) to delta estuaries ($6.5\text{m}$).
+    - **5 Major River Basins**:
+      1. *The Great Northern Silver River*: Source at `(55, 235)` descending through Silvervale into the Crossroads.
+      2. *The Frostfell Glacial Meltwater Fjord*: Source at ice horn `(-120, 245)` cascading through the Blue Crevasse Glacier.
+      3. *Western Kildland River*: Source at `(-25, 45)` winding into Lowmillburg Bay.
+      4. *Southern Crossroads River & Delta*: Source at `(8, -15)` flowing into the Shattered Sea estuary.
+      5. *Wadi Al-Zahra Arroyo*: Source at desert dunes `(240, 55)` cascading into the Al-Zahra Oasis basin.
+
+- [x] **13.3 Continental POIs, Sled Highways & Grand Map Banners**
+  - Files: [`src/procgen/voronoi_atlas.cpp`](file:///c:/git/eatscharted/src/procgen/voronoi_atlas.cpp), [`src/world/chart_world.cpp`](file:///c:/git/eatscharted/src/world/chart_world.cpp)
+  - Added Frostfell landmark POIs into the continental coordinates: *Frostguard Citadel* `(-110, 190)`, *Rimevale Hamlet* `(-85, 135)`, *Glacial Crevasse Delve* `(-145, 215)`, *Starfall Ice Spire* `(-65, 225)`, *Runed Ice Monolith* `(-140, 155)`, and *White Wyrm's Cavern* `(-170, 230)`.
+  - Added Imperial Northwest Highway connecting the Crossroads to Frostguard Citadel, and the Great Northern Alpine Pass linking Frostfell to Silvervale across the mountain crests.
+  - Placed 3D arched calligraphic map banners including `"THE FROSTFELL REACH"`, `"THE REALM OF SILVERVALE"`, `"THE SUNSCORCHED EXPANSE"`, `"KILDLAND & THE PERILOUS SHORES"`, `"THE SHATTERED SEA"`, and `"THE IMPERIAL CROSSROADS"`.
+  - Integrated Frostfell province detection and dungeon return handling in `ChartWorld`.
+
+
+
+
+
 

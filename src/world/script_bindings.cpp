@@ -84,6 +84,12 @@ void ChartScriptEngine::registerChartBindings() {
         return Value(true);
     });
 
+    evaluator_.registerMemberFunction("chart", "build_frostfell_peaks", [this](const auto& args, const auto& kwargs) -> Value {
+        uint32_t seed = static_cast<uint32_t>(resolveArg(args, kwargs, 0, "seed", Value(1845)).asInt());
+        world_.buildFrostfellPeaks(seed);
+        return Value(true);
+    });
+
     evaluator_.registerMemberFunction("chart", "build_continental_overworld", [this](const auto& args, const auto& kwargs) -> Value {
         uint32_t seed = static_cast<uint32_t>(resolveArg(args, kwargs, 0, "seed", Value(2026)).asInt());
         world_.buildContinentalPangaea(seed);
@@ -118,6 +124,46 @@ void ChartScriptEngine::registerChartBindings() {
         else if (themeStr == "gilded") th = DungeonTheme::GildedReliquary;
         world_.buildWatabouDungeon(seed, th);
         return Value(true);
+    });
+
+    evaluator_.registerMemberFunction("chart", "set_weather", [this](const auto& args, const auto& kwargs) -> Value {
+        std::string typeStr = resolveArg(args, kwargs, 0, "type", Value("clear")).asString();
+        float intensity = resolveArg(args, kwargs, 1, "intensity", Value(1.0)).asFloat();
+        WeatherType wt = WeatherType::Clear;
+        if (typeStr == "overcast") wt = WeatherType::Overcast;
+        else if (typeStr == "drizzle") wt = WeatherType::Drizzle;
+        else if (typeStr == "downpour" || typeStr == "rain") wt = WeatherType::Downpour;
+        else if (typeStr == "thunderstorm" || typeStr == "storm") wt = WeatherType::Thunderstorm;
+        else if (typeStr == "flurries" || typeStr == "snow_flurries") wt = WeatherType::Flurries;
+        else if (typeStr == "light_snow") { wt = WeatherType::Flurries; intensity = 0.20f; }
+        else if (typeStr == "blizzard" || typeStr == "snow" || typeStr == "heavy_snow") wt = WeatherType::Blizzard;
+        else if (typeStr == "sandstorm" || typeStr == "dust") wt = WeatherType::Sandstorm;
+        world_.setWeatherType(wt, intensity);
+        return Value(true);
+    });
+
+    evaluator_.registerMemberFunction("chart", "set_weather_cycle", [this](const auto& args, const auto& kwargs) -> Value {
+        bool enable = resolveArg(args, kwargs, 0, "enable", Value(true)).asBoolean();
+        float speed = resolveArg(args, kwargs, 1, "speed", Value(1.0f / 240.0f)).asFloat();
+        auto w = world_.weather();
+        w.autoCycle = enable;
+        w.cycleSpeed = speed;
+        world_.setWeather(w);
+        return Value(true);
+    });
+
+    evaluator_.registerMemberFunction("chart", "get_weather", [this](const auto&, const auto&) -> Value {
+        std::map<std::string, Value> wDict;
+        auto localW = world_.evaluateLocalWeather(world_.hero().pos.x, world_.hero().pos.z);
+        wDict["type"] = Value(weatherTypeName(localW.type));
+        wDict["description"] = Value(localW.description);
+        wDict["temperature"] = Value(static_cast<double>(localW.temperature));
+        wDict["intensity"] = Value(static_cast<double>(localW.intensity));
+        wDict["precipitation"] = Value(static_cast<double>(localW.precipitation));
+        wDict["wetness"] = Value(static_cast<double>(world_.weather().wetness));
+        wDict["snow_cover"] = Value(static_cast<double>(world_.weather().snowCover));
+        wDict["storm_surge"] = Value(static_cast<double>(world_.weather().stormSurge));
+        return Value(wDict);
     });
 
     // Watabou One-Page Dungeon Engine API bindings

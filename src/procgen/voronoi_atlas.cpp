@@ -124,6 +124,9 @@ float VoronoiAtlas::rawElevationAt(float wx, float wz) const noexcept {
     if (preset_ == AtlasPreset::SunscorchedWastes) {
         return rawElevationDesert(wx, wz);
     }
+    if (preset_ == AtlasPreset::FrostfellPeaks) {
+        return rawElevationFrostfell(wx, wz);
+    }
     // Domain-warped fractal perturbation for authentic Watabou Perilous Shores jagged coastlines
     float warpX = fbmNoise(wx * 0.018f, wz * 0.018f, seed_ + 17u, 3) * 14.0f;
     float warpZ = fbmNoise(wx * 0.018f + 9.3f, wz * 0.018f - 4.7f, seed_ + 31u, 3) * 14.0f;
@@ -189,6 +192,9 @@ float VoronoiAtlas::rawMoistureAt(float wx, float wz) const noexcept {
     }
     if (preset_ == AtlasPreset::SunscorchedWastes) {
         return rawMoistureDesert(wx, wz);
+    }
+    if (preset_ == AtlasPreset::FrostfellPeaks) {
+        return rawMoistureFrostfell(wx, wz);
     }
     if (preset_ == AtlasPreset::PerilousPeninsula) {
         // High moisture in northern/western peninsula interior (Duskwoods), arid in central/southern plains (Dragon Desert)
@@ -280,39 +286,130 @@ float VoronoiAtlas::rawMoistureDesert(float wx, float wz, Vec2f center, float ra
     return std::clamp(m, 0.0f, 1.0f);
 }
 
+float VoronoiAtlas::rawElevationFrostfell(float wx, float wz, Vec2f center, float radius) const noexcept {
+    float qx = wx - center.x;
+    float qz = wz - center.y;
+
+    // Domain warping for organic glacial carving and sinuous moraines
+    float warpX = fbmNoise(qx * 0.015f, qz * 0.015f, seed_ + 87u, 3) * 16.0f;
+    float warpZ = fbmNoise(qx * 0.015f + 11.2f, qz * 0.015f - 8.4f, seed_ + 103u, 3) * 16.0f;
+    float px = qx + warpX;
+    float pz = qz + warpZ;
+
+    // 1. Soaring Alpine Horns & Serrated Arête Ridges (Dominant in North / Northwest)
+    float ridgeNoise = 1.0f - std::abs(fbmNoise(px * 0.024f, pz * 0.024f, seed_ + 131u, 4));
+    float hornSpine = std::pow(std::max(0.0f, ridgeNoise), 2.2f);
+    float northCragBias = std::clamp((pz + 10.0f) / 45.0f, -0.2f, 1.2f);
+    float peaks = hornSpine * (2.8f + 3.8f * std::max(0.0f, northCragBias));
+
+    // 2. Broad U-Shaped Glacial Valley & Trough (carved by ancestral glacier)
+    float troughCenter = std::sin(pz * 0.038f) * 18.0f + 6.0f;
+    float distTrough = std::abs(px - troughCenter);
+    float uProfile = std::pow(std::clamp(distTrough / 28.0f, 0.0f, 1.0f), 2.8f);
+    float valleyFloor = -2.2f * (1.0f - uProfile);
+
+    // 3. Glacial Crevasse Basin & Ice Sheet (Depression around (24, -20) where deep azure ice sheet pools)
+    float glacierDx = (qx - 24.0f) / 22.0f;
+    float glacierDz = (qz + 20.0f) / 18.0f;
+    float glacierDistSq = glacierDx * glacierDx + glacierDz * glacierDz;
+    float glacierCarve = std::exp(-glacierDistSq * 1.5f);
+    float glacierH = -1.6f * glacierCarve;
+
+    // 4. Windblown Sastrugi & Snowdrift Undulations across the Tundra Plains
+    float sastrugiPhase = px * 0.065f + pz * 0.035f + fbmNoise(px * 0.025f, pz * 0.025f, seed_ + 149u, 2) * 1.8f;
+    float sastrugiWave = std::sin(sastrugiPhase);
+    float sastrugi = std::pow(std::max(0.0f, sastrugiWave), 1.5f) * 0.75f;
+
+    // 5. Permafrost Pingos (Circular frost mounds rising from tundra)
+    float pingo1Dx = (qx + 22.0f) / 7.0f;
+    float pingo1Dz = (qz + 12.0f) / 7.0f;
+    float pingo1 = std::exp(-(pingo1Dx * pingo1Dx + pingo1Dz * pingo1Dz) * 1.8f) * 1.85f;
+
+    float pingo2Dx = (qx - 10.0f) / 8.0f;
+    float pingo2Dz = (qz - 28.0f) / 8.0f;
+    float pingo2 = std::exp(-(pingo2Dx * pingo2Dx + pingo2Dz * pingo2Dz) * 1.8f) * 2.1f;
+
+    // 6. Micro-relief & snow hummocks
+    float microHummocks = fbmNoise(px * 0.048f, pz * 0.048f, seed_ + 167u, 3) * 0.45f;
+
+    // Baseline rolling snowy tundra elevation (~2.2m)
+    float h = 2.4f + peaks + valleyFloor + glacierH + sastrugi + pingo1 + pingo2 + microHummocks;
+
+    if (radius > 0.0f) {
+        float r = std::sqrt(qx * qx + qz * qz);
+        if (r > radius * 0.80f) {
+            float fade = std::clamp(1.0f - (r - radius * 0.80f) / (radius * 0.20f), 0.0f, 1.0f);
+            h = h * fade;
+        }
+    }
+    return h;
+}
+
+float VoronoiAtlas::rawMoistureFrostfell(float wx, float wz, Vec2f center, float radius) const noexcept {
+    float qx = wx - center.x;
+    float qz = wz - center.y;
+
+    // Baseline polar moisture ~ 0.52
+    float baseM = 0.52f + fbmNoise(qx * 0.020f + 43.0f, qz * 0.020f - 27.0f, seed_ + 219u, 2) * 0.12f;
+
+    // High moisture pulse at the Glacial Basin (24, -20) (ice melt & packed snow)
+    float glacierDx = (qx - 24.0f) / 20.0f;
+    float glacierDz = (qz + 20.0f) / 16.0f;
+    float glacierMoisture = std::exp(-(glacierDx * glacierDx + glacierDz * glacierDz) * 1.6f) * 0.35f;
+
+    // Taiga pocket in sheltered southern slope (-15, -18)
+    float taigaDx = (qx + 15.0f) / 16.0f;
+    float taigaDz = (qz + 18.0f) / 14.0f;
+    float taigaMoisture = std::exp(-(taigaDx * taigaDx + taigaDz * taigaDz) * 1.8f) * 0.28f;
+
+    float m = baseM + glacierMoisture + taigaMoisture;
+    if (radius > 0.0f) {
+        float r = std::sqrt(qx * qx + qz * qz);
+        if (r > radius * 0.80f) {
+            float fade = std::clamp((r - radius * 0.80f) / (radius * 0.20f), 0.0f, 1.0f);
+            m = m * (1.0f - fade) + 0.50f * fade;
+        }
+    }
+    return std::clamp(m, 0.0f, 1.0f);
+}
+
 float VoronoiAtlas::rawElevationContinental(float wx, float wz) const noexcept {
     const float rOriginSq = wx * wx + wz * wz;
 
     float hCore = 0.0f;
     if (rOriginSq < 280.0f * 280.0f) {
         // 1. Provincial centers and spatial spread parameters (Core Pangaea Continent, expanded scale)
-        const Vec2f cHighlands{0.0f, 190.0f};
+        const Vec2f cHighlands{65.0f, 195.0f};
+        const Vec2f cFrostfell{-125.0f, 190.0f};
         const Vec2f cDesert{190.0f, 0.0f};
-        const Vec2f cPeninsula{-190.0f, 0.0f};
+        const Vec2f cPeninsula{-185.0f, -25.0f};
         const Vec2f cArchipelago{0.0f, -190.0f};
         const Vec2f cCrossroads{0.0f, 0.0f};
 
-        const float sigmaProv = 110.0f;
+        const float sigmaProv = 105.0f;
         const float sigmaCenter = 75.0f;
         const float inv2SigmaProvSq = 1.0f / (2.0f * sigmaProv * sigmaProv);
         const float inv2SigmaCenterSq = 1.0f / (2.0f * sigmaCenter * sigmaCenter);
 
         float dSqHighlands = (wx - cHighlands.x) * (wx - cHighlands.x) + (wz - cHighlands.y) * (wz - cHighlands.y);
+        float dSqFrostfell = (wx - cFrostfell.x) * (wx - cFrostfell.x) + (wz - cFrostfell.y) * (wz - cFrostfell.y);
         float dSqDesert = (wx - cDesert.x) * (wx - cDesert.x) + (wz - cDesert.y) * (wz - cDesert.y);
         float dSqPeninsula = (wx - cPeninsula.x) * (wx - cPeninsula.x) + (wz - cPeninsula.y) * (wz - cPeninsula.y);
         float dSqArchipelago = (wx - cArchipelago.x) * (wx - cArchipelago.x) + (wz - cArchipelago.y) * (wz - cArchipelago.y);
         float dSqCenter = (wx - cCrossroads.x) * (wx - cCrossroads.x) + (wz - cCrossroads.y) * (wz - cCrossroads.y);
 
         float wHighlands = std::exp(-dSqHighlands * inv2SigmaProvSq);
+        float wFrostfell = std::exp(-dSqFrostfell * inv2SigmaProvSq);
         float wDesert = std::exp(-dSqDesert * inv2SigmaProvSq);
         float wPeninsula = std::exp(-dSqPeninsula * inv2SigmaProvSq);
         float wArchipelago = std::exp(-dSqArchipelago * inv2SigmaProvSq);
         float wCenter = std::exp(-dSqCenter * inv2SigmaCenterSq);
 
-        float totalW = wHighlands + wDesert + wPeninsula + wArchipelago + wCenter;
+        float totalW = wHighlands + wFrostfell + wDesert + wPeninsula + wArchipelago + wCenter;
         if (totalW > 1e-5f) {
             float invW = 1.0f / totalW;
             wHighlands *= invW;
+            wFrostfell *= invW;
             wDesert *= invW;
             wPeninsula *= invW;
             wArchipelago *= invW;
@@ -326,7 +423,7 @@ float VoronoiAtlas::rawElevationContinental(float wx, float wz) const noexcept {
         constexpr float kCoordScale = 0.42f;
         constexpr float kWeightGate = 1e-3f;
 
-        // A. Highland Kingdom (North)
+        // A. Highland Kingdom (Northeast)
         if (wHighlands > kWeightGate) {
             float qxH = (wx - cHighlands.x) * kCoordScale;
             float qzH = (wz - cHighlands.y) * kCoordScale;
@@ -345,7 +442,15 @@ float VoronoiAtlas::rawElevationContinental(float wx, float wz) const noexcept {
             hCore += wHighlands * hHighlands;
         }
 
-        // B. Sunscorched Wastes (East)
+        // B. The Frostfell Reach (Northwest)
+        if (wFrostfell > kWeightGate) {
+            float qxF = (wx - cFrostfell.x) * kCoordScale;
+            float qzF = (wz - cFrostfell.y) * kCoordScale;
+            float hFrostfell = rawElevationFrostfell(cFrostfell.x + qxF, cFrostfell.y + qzF, cFrostfell, 0.0f);
+            hCore += wFrostfell * hFrostfell;
+        }
+
+        // C. Sunscorched Wastes (East)
         if (wDesert > kWeightGate) {
             float qxD = (wx - cDesert.x) * kCoordScale;
             float qzD = (wz - cDesert.y) * kCoordScale;
@@ -440,33 +545,37 @@ float VoronoiAtlas::rawMoistureContinental(float wx, float wz) const noexcept {
 
     float mCore = 0.0f;
     if (rOriginSq < 280.0f * 280.0f) {
-        const Vec2f cHighlands{0.0f, 190.0f};
+        const Vec2f cHighlands{65.0f, 195.0f};
+        const Vec2f cFrostfell{-125.0f, 190.0f};
         const Vec2f cDesert{190.0f, 0.0f};
-        const Vec2f cPeninsula{-190.0f, 0.0f};
+        const Vec2f cPeninsula{-185.0f, -25.0f};
         const Vec2f cArchipelago{0.0f, -190.0f};
         const Vec2f cCrossroads{0.0f, 0.0f};
 
-        const float sigmaProv = 110.0f;
+        const float sigmaProv = 105.0f;
         const float sigmaCenter = 75.0f;
         const float inv2SigmaProvSq = 1.0f / (2.0f * sigmaProv * sigmaProv);
         const float inv2SigmaCenterSq = 1.0f / (2.0f * sigmaCenter * sigmaCenter);
 
         float dSqHighlands = (wx - cHighlands.x) * (wx - cHighlands.x) + (wz - cHighlands.y) * (wz - cHighlands.y);
+        float dSqFrostfell = (wx - cFrostfell.x) * (wx - cFrostfell.x) + (wz - cFrostfell.y) * (wz - cFrostfell.y);
         float dSqDesert = (wx - cDesert.x) * (wx - cDesert.x) + (wz - cDesert.y) * (wz - cDesert.y);
         float dSqPeninsula = (wx - cPeninsula.x) * (wx - cPeninsula.x) + (wz - cPeninsula.y) * (wz - cPeninsula.y);
         float dSqArchipelago = (wx - cArchipelago.x) * (wx - cArchipelago.x) + (wz - cArchipelago.y) * (wz - cArchipelago.y);
         float dSqCenter = (wx - cCrossroads.x) * (wx - cCrossroads.x) + (wz - cCrossroads.y) * (wz - cCrossroads.y);
 
         float wHighlands = std::exp(-dSqHighlands * inv2SigmaProvSq);
+        float wFrostfell = std::exp(-dSqFrostfell * inv2SigmaProvSq);
         float wDesert = std::exp(-dSqDesert * inv2SigmaProvSq);
         float wPeninsula = std::exp(-dSqPeninsula * inv2SigmaProvSq);
         float wArchipelago = std::exp(-dSqArchipelago * inv2SigmaProvSq);
         float wCenter = std::exp(-dSqCenter * inv2SigmaCenterSq);
 
-        float totalW = wHighlands + wDesert + wPeninsula + wArchipelago + wCenter;
+        float totalW = wHighlands + wFrostfell + wDesert + wPeninsula + wArchipelago + wCenter;
         if (totalW > 1e-5f) {
             float invW = 1.0f / totalW;
             wHighlands *= invW;
+            wFrostfell *= invW;
             wDesert *= invW;
             wPeninsula *= invW;
             wArchipelago *= invW;
@@ -480,6 +589,12 @@ float VoronoiAtlas::rawMoistureContinental(float wx, float wz) const noexcept {
         if (wHighlands > kWeightGate) {
             float mHighlands = 0.72f + fbmNoise(wx * 0.010f, wz * 0.010f, seed_ + 211u, 3) * 0.15f;
             mCore += wHighlands * mHighlands;
+        }
+        if (wFrostfell > kWeightGate) {
+            float qxF = (wx - cFrostfell.x) * kCoordScale;
+            float qzF = (wz - cFrostfell.y) * kCoordScale;
+            float mFrostfell = rawMoistureFrostfell(cFrostfell.x + qxF, cFrostfell.y + qzF, cFrostfell, 0.0f);
+            mCore += wFrostfell * mFrostfell;
         }
         if (wDesert > kWeightGate) {
             float qxD = (wx - cDesert.x) * kCoordScale;
@@ -767,18 +882,25 @@ void VoronoiAtlas::generateOverworldGraph() {
 
     // 2. Synthesize Watabou-style Winding Rivers from high hills down to the coast
     if (preset_ == AtlasPreset::ContinentalPangaea) {
-        // The Great Silver River: Northern snowmelt peaks descending through Highland valley to the Crossroads
-        addWindingRiver({-10.0f, 235.0f}, {0.0f, 120.0f}, {0.0f, 20.0f}, 1.8f, 3.6f);
-        // Western River Fork: Crossroads through Kildland meadows into Lowmillburg Bay
-        addWindingRiver({0.0f, 20.0f}, {-90.0f, 10.0f}, {-205.0f, -32.0f}, 2.2f, 4.4f);
-        // Southern River Fork: Crossroads down to the coastal delta into the Shattered Sea
-        addWindingRiver({0.0f, 20.0f}, {10.0f, -75.0f}, {15.0f, -195.0f}, 2.2f, 4.8f);
-        // High Alpine Glacier Tributary: Northwest Silvervale peak descending to meet Great Silver River
-        traceHydrologicalRiver({-35.0f, 230.0f}, 1.0f, 0.05f, 200.0f);
-        // Wadi Al-Zahra: Dry desert arroyo carving from northeast dunes into oasis depression
-        addWindingRiver({230.0f, 42.0f}, {210.0f, 8.0f}, {188.0f, -12.0f}, 0.8f, 1.8f);
+        // 1. The Great Northern Silver River: Traced downhill from high Silvervale alpine snowfields
+        traceHydrologicalRiver({55.0f, 235.0f}, 1.2f, 0.05f, 360.0f);
+
+        // 2. The Frostfell Glacial Meltwater Fjord: High razor ice horn descending through the glacial basin
+        traceHydrologicalRiver({-120.0f, 245.0f}, 1.2f, 0.05f, 340.0f);
+
+        // 3. Western Kildland River: Highland foothills meandering west through rolling meadows into Lowmillburg Bay
+        traceHydrologicalRiver({-25.0f, 45.0f}, 1.4f, 0.05f, 280.0f);
+
+        // 4. Southern Crossroads River & Coastal Delta: Crossroads plateau flowing south into the Shattered Sea
+        traceHydrologicalRiver({8.0f, -15.0f}, 1.6f, 0.05f, 260.0f);
+
+        // 5. Wadi Al-Zahra (Desert Arroyo): High dunes cascading into the oasis depression
+        traceHydrologicalRiver({240.0f, 55.0f}, 0.8f, 0.10f, 180.0f);
     } else if (preset_ == AtlasPreset::SunscorchedWastes) {
         addWindingRiver({16.0f, -3.0f}, {12.0f, -6.0f}, {9.0f, -8.0f}, 0.5f, 1.1f);
+    } else if (preset_ == AtlasPreset::FrostfellPeaks) {
+        // Glacial meltwater stream from north-central ice crags down into the Glacial Crevasse Basin
+        addWindingRiver({-8.0f, 38.0f}, {8.0f, 12.0f}, {24.0f, -20.0f}, 0.9f, 2.4f);
     } else
     if (preset_ == AtlasPreset::PerilousPeninsula) {
         // Meandering river starting in alpine mountains past Shattered Palace and Dragon Desert to the sea
@@ -804,23 +926,31 @@ void VoronoiAtlas::generateOverworldGraph() {
     };
 
     if (preset_ == AtlasPreset::ContinentalPangaea) {
-        // 1. Highland Kingdom (North Sector)
-        addPoi(PoiCategory::CitadelKeep,      0.0f,  195.0f, "HIGHGUARD KEEP",    "Twin-Bridge Mountain Fortress", 3);
-        addPoi(PoiCategory::MarketHamlet,   -45.0f,  135.0f, "MEADOWBROOK",       "Valley River Trading Post",     1);
-        addPoi(PoiCategory::AlpineMonastery, 60.0f,  230.0f, "FROSTPEAK EYRIE",   "Cloud-Capped Astrologer Spire", 6);
-        addPoi(PoiCategory::DungeonPortal,  -65.0f,  210.0f, "BLACKHOLLOW DELVE", "Lv. 5 Deep Mine Portal",       5);
+        // 1. Highland Kingdom (Northeast Sector)
+        addPoi(PoiCategory::CitadelKeep,     60.0f,  195.0f, "HIGHGUARD KEEP",    "Twin-Bridge Mountain Fortress", 3);
+        addPoi(PoiCategory::MarketHamlet,    25.0f,  135.0f, "MEADOWBROOK",       "Valley River Trading Post",     1);
+        addPoi(PoiCategory::AlpineMonastery, 95.0f,  230.0f, "FROSTPEAK EYRIE",   "Cloud-Capped Astrologer Spire", 6);
+        addPoi(PoiCategory::DungeonPortal,   15.0f,  215.0f, "BLACKHOLLOW DELVE", "Lv. 5 Deep Mine Portal",       5);
 
-        // 2. The Perilous Peninsula (West Sector)
-        addPoi(PoiCategory::CitadelKeep,   -175.0f,  -10.0f, "LOWMILLBURG",       "Western Walled Castle & Port",  3);
-        addPoi(PoiCategory::Windmill,      -190.0f,  -20.0f, "LOWMILL GRANGE",    "Farmland Grain Terraces",       1);
-        addPoi(PoiCategory::Windmill,      -162.0f,  -22.0f, "WESTVALE MILL",     "Coastal Valley Windmill",       1);
-        addPoi(PoiCategory::MarketHamlet,  -145.0f,   55.0f, "COLDHEARTFIELD",    "Terracotta Hamlet & Fields",    2);
-        addPoi(PoiCategory::PortHarbor,    -125.0f,  -55.0f, "STORMPOOL",         "Cape Harbor & Anchorage",       2);
-        addPoi(PoiCategory::Lighthouse,    -112.0f,  -50.0f, "STORMPOOL BEACON",  "Watchtower of the Shoals",      2);
-        addPoi(PoiCategory::DungeonPortal, -205.0f,   35.0f, "SHATTERED PALACE",  "Ancient Sunken Necropolis",     4);
-        addPoi(PoiCategory::AlpineMonastery,-180.0f, 110.0f, "STARFALL ABBEY",    "Highland Astrologer Spire",     5);
+        // 2. The Frostfell Reach (Northwest Sector - Icy & Snowy Expanse)
+        addPoi(PoiCategory::CitadelKeep,   -110.0f,  190.0f, "FROSTGUARD CITADEL", "Twin-Tower Ice Fortress",      4);
+        addPoi(PoiCategory::MarketHamlet,   -85.0f,  135.0f, "RIMEVALE HAMLET",    "Frost-Timber Trading Post",     2);
+        addPoi(PoiCategory::DungeonPortal, -145.0f,  215.0f, "GLACIAL CREVASSE DELVE", "Lv. 6 Chasm Beneath Ice", 6);
+        addPoi(PoiCategory::AlpineMonastery,-65.0f,  225.0f, "STARFALL ICE SPIRE", "High Mountain Sanctuary",     7);
+        addPoi(PoiCategory::StandingStones,-140.0f,  155.0f, "RUNED ICE MONOLITH", "Ancient Frostgiant Monoliths",  3);
+        addPoi(PoiCategory::BossLair,      -170.0f,  230.0f, "WHITE WYRM'S CAVERN","Lv. 8 Frost Drake Hollow",     8);
 
-        // 3. The Sunscorched Wastes (East Sector)
+        // 3. The Perilous Peninsula (West Sector)
+        addPoi(PoiCategory::CitadelKeep,   -175.0f,  -25.0f, "LOWMILLBURG",       "Western Walled Castle & Port",  3);
+        addPoi(PoiCategory::Windmill,      -190.0f,  -35.0f, "LOWMILL GRANGE",    "Farmland Grain Terraces",       1);
+        addPoi(PoiCategory::Windmill,      -162.0f,  -37.0f, "WESTVALE MILL",     "Coastal Valley Windmill",       1);
+        addPoi(PoiCategory::MarketHamlet,  -145.0f,   40.0f, "COLDHEARTFIELD",    "Terracotta Hamlet & Fields",    2);
+        addPoi(PoiCategory::PortHarbor,    -125.0f,  -70.0f, "STORMPOOL",         "Cape Harbor & Anchorage",       2);
+        addPoi(PoiCategory::Lighthouse,    -112.0f,  -65.0f, "STORMPOOL BEACON",  "Watchtower of the Shoals",      2);
+        addPoi(PoiCategory::DungeonPortal, -205.0f,   20.0f, "SHATTERED PALACE",  "Ancient Sunken Necropolis",     4);
+        addPoi(PoiCategory::AlpineMonastery,-180.0f,  95.0f, "STARFALL ABBEY",    "Highland Astrologer Spire",     5);
+
+        // 4. The Sunscorched Wastes (East Sector)
         addPoi(PoiCategory::MarketHamlet,   180.0f,  -10.0f, "AL-ZAHRA OASIS",    "Emerald Spring & Caravanserai", 1);
         addPoi(PoiCategory::DungeonPortal,  215.0f,   65.0f, "TOMB OF SAND KINGS","Lv. 6 Sunken Sepulcher",       6);
         addPoi(PoiCategory::CitadelKeep,    160.0f,   80.0f, "DUSTDEVIL OUTPOST", "Dune Garrison & Watchpost",    3);
@@ -828,14 +958,14 @@ void VoronoiAtlas::generateOverworldGraph() {
         addPoi(PoiCategory::StandingStones, 170.0f,  -80.0f, "THE CRACKED ARCH",  "Sun-Baked Monoliths",           2);
         addPoi(PoiCategory::BossLair,       235.0f,  -70.0f, "SCORPION'S GULCH",  "Lv. 8 Chitin Behemoth Lair",   8);
 
-        // 4. The Shattered Archipelago (South Sector)
+        // 5. The Shattered Archipelago (South Sector)
         addPoi(PoiCategory::PortHarbor,       0.0f, -190.0f, "CORSAIR'S HAVEN",   "Pirate Atoll Anchorage",       2);
         addPoi(PoiCategory::Lighthouse,     -70.0f, -220.0f, "STORMGLASS TOWER",  "Western Reef Beacon",          3);
         addPoi(PoiCategory::DungeonPortal,   65.0f, -150.0f, "ABYSSAL GROTTO",    "Lv. 5 Flooded Vault",          5);
         addPoi(PoiCategory::SunkenRuin,     -55.0f, -135.0f, "SIREN'S ARCH",      "Coral-Draped Temple",          4);
         addPoi(PoiCategory::BossLair,        80.0f, -230.0f, "LEVIATHAN REEF",    "Lv. 10 Mauler of the Deep",   10);
 
-        // 5. The Imperial Crossroads (Center)
+        // 6. The Imperial Crossroads (Center)
         addPoi(PoiCategory::MarketHamlet,     0.0f,    0.0f, "IMPERIAL CROSSROADS","Grand Trade Center & Inn",     1);
     } else if (preset_ == AtlasPreset::SunscorchedWastes) {
         std::string oasisName  = (seed_ == 1066u) ? "AL-ZAHRA OASIS" : ProceduralNameGenerator::generateLocaleName(seed_ + 1u, BiomeId::DeciduousWoodland, PoiCategory::MarketHamlet);
@@ -849,6 +979,18 @@ void VoronoiAtlas::generateOverworldGraph() {
         addPoi(PoiCategory::AlpineMonastery,-28.0f, -22.0f, spireName.c_str(),  "Desert Astrologer Spire",       4);
         addPoi(PoiCategory::StandingStones, -18.0f,   8.0f, "THE CRACKED ARCH", "Ancient Sun-Baked Monoliths",   2);
         addPoi(PoiCategory::BossLair,        32.0f, -28.0f, "SCORPION'S GULCH", "Lv. 8 Chitin Behemoth Lair",    8);
+    } else if (preset_ == AtlasPreset::FrostfellPeaks) {
+        std::string keepName   = (seed_ == 1845u) ? "FROSTGUARD CITADEL" : ProceduralNameGenerator::generateLocaleName(seed_ + 1u, BiomeId::SnowyTundra, PoiCategory::CitadelKeep);
+        std::string hamletName = (seed_ == 1845u) ? "RIMEVALE HAMLET"   : ProceduralNameGenerator::generateLocaleName(seed_ + 2u, BiomeId::SnowyTundra, PoiCategory::MarketHamlet);
+        std::string spireName  = (seed_ == 1845u) ? "STARFALL ICE SPIRE" : ProceduralNameGenerator::generateLocaleName(seed_ + 3u, BiomeId::AlpinePeak, PoiCategory::AlpineMonastery);
+        std::string delveName  = (seed_ == 1845u) ? "GLACIAL CREVASSE DELVE" : ProceduralNameGenerator::generateLocaleName(seed_ + 4u, BiomeId::GlacialIce, PoiCategory::DungeonPortal);
+
+        addPoi(PoiCategory::CitadelKeep,      0.0f,  12.0f, keepName.c_str(),   "Twin-Tower Ice Fortress",        3);
+        addPoi(PoiCategory::MarketHamlet,   -24.0f, -14.0f, hamletName.c_str(), "Frost-Timber Trading Post",       2);
+        addPoi(PoiCategory::AlpineMonastery, 32.0f,  38.0f, spireName.c_str(),  "High Glacial Astrologer Spire",   6);
+        addPoi(PoiCategory::DungeonPortal,   26.0f, -22.0f, delveName.c_str(),  "Lv. 5 Chasm Beneath The Ice",     5);
+        addPoi(PoiCategory::StandingStones, -18.0f,  24.0f, "RUNED ICE MONOLITH","Ancient Frostgiant Monoliths",   3);
+        addPoi(PoiCategory::BossLair,       -34.0f,  38.0f, "WHITE WYRM'S CAVERN","Lv. 8 Frost Drake Hollow",      8);
     } else if (preset_ == AtlasPreset::PerilousPeninsula) {
         std::string townName   = (seed_ == 1492u) ? "LOWMILLBURG" : ProceduralNameGenerator::generateLocaleName(seed_ + 1u, BiomeId::LushMeadow, PoiCategory::CitadelKeep);
         std::string hamletName = (seed_ == 1492u) ? "COLDHEARTFIELD" : ProceduralNameGenerator::generateLocaleName(seed_ + 2u, BiomeId::LushMeadow, PoiCategory::MarketHamlet);
@@ -881,35 +1023,53 @@ void VoronoiAtlas::generateOverworldGraph() {
 
     // 4. Synthesize Spline Trade Roads & Dashed Wilderness Trails between POIs
     if (preset_ == AtlasPreset::ContinentalPangaea) {
-        // Imperial Highway North: Highguard Keep -> Crossroads
-        addCurvedRoad({0.0f, 195.0f},  {0.0f, 100.0f},   {0.0f, 0.0f},   true);
-        // Imperial Highway South: Crossroads -> Southern Ferry Cape
-        addCurvedRoad({0.0f, 0.0f},    {0.0f, -65.0f},   {0.0f, -130.0f}, true);
+        // Imperial Highway North-East: Crossroads -> Meadowbrook -> Highguard Keep
+        addCurvedRoad({0.0f, 0.0f},    {12.0f, 70.0f},   {25.0f, 135.0f},  true);
+        addCurvedRoad({25.0f, 135.0f}, {42.0f, 165.0f},  {60.0f, 195.0f},  true);
+
+        // Imperial Highway North-West: Crossroads -> Rimevale -> Frostguard Citadel
+        addCurvedRoad({0.0f, 0.0f},    {-40.0f, 65.0f},  {-85.0f, 135.0f}, true);
+        addCurvedRoad({-85.0f, 135.0f},{-98.0f, 162.0f}, {-110.0f, 190.0f},true);
 
         // Imperial Highway West: Lowmillburg -> Crossroads
-        addCurvedRoad({-175.0f, -10.0f}, {-88.0f, -5.0f},  {0.0f, 0.0f},   true);
+        addCurvedRoad({-175.0f, -25.0f}, {-88.0f, -12.0f}, {0.0f, 0.0f},   true);
+
         // Imperial Highway East: Crossroads -> Al-Zahra Oasis
         addCurvedRoad({0.0f, 0.0f},    {90.0f, -5.0f},   {180.0f, -10.0f}, true);
 
-        // Highland Trail: Highguard Keep -> Frostpeak Eyrie -> Whispering Pass -> Dustdevil Outpost
-        addCurvedRoad({0.0f, 195.0f},  {30.0f, 212.0f},  {60.0f, 230.0f}, false);
-        addCurvedRoad({60.0f, 230.0f}, {110.0f, 155.0f}, {160.0f, 80.0f}, false);
+        // Imperial Highway South: Crossroads -> Southern Ferry Cape
+        addCurvedRoad({0.0f, 0.0f},    {0.0f, -65.0f},   {0.0f, -130.0f},  true);
+
+        // Great Northern Alpine Pass: Frostguard Citadel -> Starfall Ice Spire -> Highguard Keep
+        addCurvedRoad({-110.0f, 190.0f}, {-88.0f, 210.0f}, {-65.0f, 225.0f}, false);
+        addCurvedRoad({-65.0f, 225.0f},  {0.0f, 215.0f},   {60.0f, 195.0f},  false);
+
+        // Frostfell Glacier Trail: Frostguard Citadel -> Glacial Crevasse Delve
+        addCurvedRoad({-110.0f, 190.0f}, {-128.0f, 202.0f}, {-145.0f, 215.0f}, false);
+
+        // Frostfell Western Route: Rimevale -> Runed Monolith -> Starfall Abbey
+        addCurvedRoad({-85.0f, 135.0f},  {-115.0f, 145.0f}, {-140.0f, 155.0f}, false);
+        addCurvedRoad({-140.0f, 155.0f}, {-160.0f, 125.0f}, {-180.0f, 95.0f},  false);
+
+        // Highland Trail: Highguard Keep -> Frostpeak Eyrie -> Dustdevil Outpost
+        addCurvedRoad({60.0f, 195.0f},  {78.0f, 212.0f},  {95.0f, 230.0f},  false);
+        addCurvedRoad({95.0f, 230.0f},  {135.0f, 155.0f}, {160.0f, 80.0f},  false);
 
         // Peninsula Coastal Road: Lowmillburg -> Westvale Mill -> Stormpool
-        addCurvedRoad({-175.0f, -10.0f},{-170.0f, -18.0f}, {-162.0f, -22.0f}, true);
-        addCurvedRoad({-162.0f, -22.0f},{-145.0f, -40.0f}, {-125.0f, -55.0f}, false);
+        addCurvedRoad({-175.0f, -25.0f},{-170.0f, -32.0f}, {-162.0f, -37.0f}, true);
+        addCurvedRoad({-162.0f, -37.0f},{-145.0f, -55.0f}, {-125.0f, -70.0f}, false);
 
         // Peninsula Northern Road: Lowmillburg -> Coldheartfield -> Starfall Abbey
-        addCurvedRoad({-175.0f, -10.0f},{-160.0f, 22.0f},  {-145.0f, 55.0f}, false);
-        addCurvedRoad({-145.0f, 55.0f}, {-162.0f, 82.0f},  {-180.0f, 110.0f}, false);
+        addCurvedRoad({-175.0f, -25.0f},{-160.0f, 10.0f},  {-145.0f, 40.0f},  false);
+        addCurvedRoad({-145.0f, 40.0f}, {-162.0f, 68.0f},  {-180.0f, 95.0f},  false);
 
         // Desert Pilgrimage Trails:
-        addCurvedRoad({180.0f, -10.0f}, {197.0f, 27.0f},  {215.0f, 65.0f}, false);
+        addCurvedRoad({180.0f, -10.0f}, {197.0f, 27.0f},  {215.0f, 65.0f},  false);
         addCurvedRoad({180.0f, -10.0f}, {157.0f, -32.0f}, {135.0f, -55.0f}, false);
         addCurvedRoad({135.0f, -55.0f}, {152.0f, -68.0f}, {170.0f, -80.0f}, false);
 
         // Southern Sea Channel (Ferry Cape -> Corsair's Haven)
-        addCurvedRoad({0.0f, -130.0f}, {0.0f, -160.0f},  {0.0f, -190.0f}, false);
+        addCurvedRoad({0.0f, -130.0f}, {0.0f, -160.0f},  {0.0f, -190.0f},   false);
     } else if (preset_ == AtlasPreset::SunscorchedWastes) {
         // Northern garrison down to Al-Zahra Oasis
         addCurvedRoad({-6.0f, 32.0f},  {4.0f, 14.0f},    {12.0f, -6.0f},  false);
@@ -919,6 +1079,15 @@ void VoronoiAtlas::generateOverworldGraph() {
         addCurvedRoad({12.0f, -6.0f},  {19.0f, 10.0f},   {24.0f, 26.0f},  false);
         // Desert trade trail past the Cracked Arch
         addCurvedRoad({-28.0f, -22.0f},{-22.0f, -6.0f},  {-18.0f, 8.0f},  false);
+    } else if (preset_ == AtlasPreset::FrostfellPeaks) {
+        // Sled trail from Rimevale Hamlet north to Frostguard Citadel
+        addCurvedRoad({-24.0f, -14.0f}, {-10.0f, -2.0f}, {0.0f, 12.0f},   true);
+        // Mountain pass ascending from Frostguard Citadel to Starfall Ice Spire
+        addCurvedRoad({0.0f, 12.0f},    {18.0f, 24.0f},   {32.0f, 38.0f},  false);
+        // Glacier route from Frostguard Citadel descending to Glacial Crevasse Delve
+        addCurvedRoad({0.0f, 12.0f},    {14.0f, -4.0f},   {26.0f, -22.0f}, false);
+        // Trail across western tundra to Runed Ice Monolith
+        addCurvedRoad({-24.0f, -14.0f}, {-22.0f, 6.0f},   {-18.0f, 24.0f}, false);
     } else if (preset_ == AtlasPreset::PerilousPeninsula) {
         // Reference Dotted Crimson Route: Coldheartfield -> Stormpool -> Lowmillburg
         addCurvedRoad({18.0f, 12.0f},  {26.0f, 0.0f},   {32.0f, -12.0f}, false);
@@ -936,31 +1105,37 @@ void VoronoiAtlas::generateOverworldGraph() {
 
     // 5. Place Curved Calligraphic Map Banners (Watabou Perilous Shores + Cat Quest region titles)
     if (preset_ == AtlasPreset::ContinentalPangaea) {
-        // Northern Highlands Grand Banner
+        // 1. The Frostfell Reach Grand Banner (Northwest)
+        banners_.push_back(CurvedMapBanner{
+            "THE FROSTFELL REACH",
+            {-170.0f, 245.0f}, {-110.0f, 260.0f}, {-50.0f, 245.0f},
+            4.0f, true, false
+        });
+        // 2. Northern Silvervale Grand Banner (Northeast)
         banners_.push_back(CurvedMapBanner{
             "THE REALM OF SILVERVALE",
-            {-70.0f, 255.0f}, {0.0f, 265.0f}, {70.0f, 255.0f},
-            4.2f, true, false
+            {10.0f, 255.0f}, {65.0f, 265.0f}, {120.0f, 255.0f},
+            4.0f, true, false
         });
-        // Eastern Desert Grand Banner
+        // 3. Eastern Desert Grand Banner
         banners_.push_back(CurvedMapBanner{
             "THE SUNSCORCHED EXPANSE",
             {130.0f, 115.0f}, {190.0f, 125.0f}, {250.0f, 115.0f},
             4.0f, true, false
         });
-        // Western Peninsula Grand Banner
+        // 4. Western Peninsula Grand Banner
         banners_.push_back(CurvedMapBanner{
             "KILDLAND & THE PERILOUS SHORES",
-            {-240.0f, 80.0f}, {-180.0f, 90.0f}, {-120.0f, 80.0f},
+            {-240.0f, 60.0f}, {-185.0f, 70.0f}, {-130.0f, 60.0f},
             4.0f, true, false
         });
-        // Southern Archipelago Grand Banner (isWaterTitle = true)
+        // 5. Southern Archipelago Grand Banner (isWaterTitle = true)
         banners_.push_back(CurvedMapBanner{
             "THE SHATTERED SEA",
             {-90.0f, -245.0f}, {0.0f, -260.0f}, {90.0f, -245.0f},
             4.2f, true, true
         });
-        // Central Imperial Crossroads Banner
+        // 6. Central Imperial Crossroads Banner
         banners_.push_back(CurvedMapBanner{
             "THE IMPERIAL CROSSROADS",
             {-40.0f, -18.0f}, {0.0f, -25.0f}, {40.0f, -18.0f},
@@ -981,6 +1156,22 @@ void VoronoiAtlas::generateOverworldGraph() {
             "TOMB OF THE SAND KINGS",
             {14.0f, 34.0f}, {24.0f, 36.5f}, {34.0f, 34.0f},
             1.5f, false, false
+        });
+    } else if (preset_ == AtlasPreset::FrostfellPeaks) {
+        banners_.push_back(CurvedMapBanner{
+            "THE FROSTFELL REACH",
+            {-32.0f, 48.0f}, {0.0f, 56.0f}, {32.0f, 48.0f},
+            2.8f, true, false
+        });
+        banners_.push_back(CurvedMapBanner{
+            "BLUE CREVASSE GLACIER",
+            {12.0f, -32.0f}, {24.0f, -34.5f}, {36.0f, -32.0f},
+            1.7f, false, false
+        });
+        banners_.push_back(CurvedMapBanner{
+            "RIMEVALE TUNDRA",
+            {-36.0f, -24.0f}, {-24.0f, -26.5f}, {-12.0f, -24.0f},
+            1.6f, false, false
         });
     } else if (preset_ == AtlasPreset::PerilousPeninsula) {
         if (seed_ == 1492u) {
@@ -1495,6 +1686,108 @@ ChartFieldSample VoronoiAtlas::sampleAtKnown(
     uint32_t cellSeed = hashU32(static_cast<uint32_t>(std::floor(worldX * 0.1f)) * 73u +
                                 static_cast<uint32_t>(std::floor(worldZ * 0.1f)) * 199u + seed_);
     float coastDist = std::abs(s.sdfCoast);
+
+    if (preset_ == AtlasPreset::FrostfellPeaks) {
+        if (hC <= 0.0f) {
+            s.biomePrimary = BiomeId::GlacialIce;
+            s.biomeSecondary = BiomeId::CoastalShoals;
+            s.biomeBlend = (s.sdfCoast > -3.5f) ? std::clamp((s.sdfCoast + 3.5f) / 3.5f, 0.0f, 1.0f) : 0.0f;
+            return s;
+        }
+
+        // Glacial basin depression centered around (24, -20)
+        float glacierDx = (worldX - 24.0f) / 20.0f;
+        float glacierDz = (worldZ + 20.0f) / 16.0f;
+        float inGlacierBasin = std::exp(-(glacierDx * glacierDx + glacierDz * glacierDz));
+
+        if (hC > 5.5f) {
+            s.biomePrimary = BiomeId::AlpinePeak;
+            s.biomeSecondary = BiomeId::SnowyTundra;
+            s.biomeBlend = std::clamp((6.5f - hC) / 1.0f, 0.0f, 1.0f);
+        } else if (inGlacierBasin > 0.35f || (hC < 1.8f && mC > 0.60f)) {
+            s.biomePrimary = BiomeId::GlacialIce;
+            s.biomeSecondary = BiomeId::SnowyTundra;
+            s.biomeBlend = std::clamp(1.0f - inGlacierBasin, 0.0f, 1.0f);
+        } else if (mC > 0.68f && hC < 3.8f && worldX < -4.0f) {
+            s.biomePrimary = BiomeId::TaigaPines;
+            s.biomeSecondary = BiomeId::SnowyTundra;
+            s.biomeBlend = std::clamp((0.78f - mC) / 0.10f, 0.0f, 1.0f);
+        } else {
+            s.biomePrimary = BiomeId::SnowyTundra;
+            s.biomeSecondary = (hC > 4.0f) ? BiomeId::AlpinePeak : BiomeId::GlacialIce;
+            s.biomeBlend = (hC > 4.0f) ? std::clamp((hC - 4.0f) / 1.5f, 0.0f, 1.0f) : 0.25f;
+        }
+        return s;
+    }
+
+    if (preset_ == AtlasPreset::ContinentalPangaea) {
+        // Northwest Frostfell Zone: center (-125, 190)
+        float dSqFrostfell = (worldX - (-125.0f)) * (worldX - (-125.0f)) + (worldZ - 190.0f) * (worldZ - 190.0f);
+        bool inFrostfellZone = (dSqFrostfell < 135.0f * 135.0f) || (worldZ > 115.0f && worldX < -35.0f);
+
+        // East Desert Zone: center (190, 0)
+        float dSqDesert = (worldX - 190.0f) * (worldX - 190.0f) + worldZ * worldZ;
+        bool inDesertZone = (dSqDesert < 130.0f * 130.0f) || (worldX > 75.0f && worldZ < 85.0f && worldZ > -85.0f);
+
+        if (hC <= 0.0f) {
+            if (inFrostfellZone) {
+                s.biomePrimary = BiomeId::GlacialIce;
+                s.biomeSecondary = BiomeId::CoastalShoals;
+                s.biomeBlend = (s.sdfCoast > -3.5f) ? std::clamp((s.sdfCoast + 3.5f) / 3.5f, 0.0f, 1.0f) : 0.0f;
+            } else {
+                s.biomePrimary = (hC <= -2.2f) ? BiomeId::OceanDeep : BiomeId::CoastalShoals;
+                s.biomeSecondary = (s.sdfCoast > -3.5f) ? BiomeId::SandyBeach : BiomeId::OceanDeep;
+                s.biomeBlend = (s.sdfCoast > -3.5f) ? std::clamp((s.sdfCoast + 3.5f) / 3.5f, 0.0f, 1.0f) : 0.0f;
+            }
+            return s;
+        }
+
+        if (inFrostfellZone) {
+            float glacierDx = (worldX - (-145.0f)) / 30.0f;
+            float glacierDz = (worldZ - 215.0f) / 26.0f;
+            float inGlacierBasin = std::exp(-(glacierDx * glacierDx + glacierDz * glacierDz));
+
+            if (hC > 6.4f) {
+                s.biomePrimary = BiomeId::AlpinePeak;
+                s.biomeSecondary = BiomeId::SnowyTundra;
+                s.biomeBlend = std::clamp((7.4f - hC) / 1.0f, 0.0f, 1.0f);
+            } else if (inGlacierBasin > 0.30f || (hC < 2.0f && mC > 0.58f)) {
+                s.biomePrimary = BiomeId::GlacialIce;
+                s.biomeSecondary = BiomeId::SnowyTundra;
+                s.biomeBlend = std::clamp(1.0f - inGlacierBasin, 0.0f, 1.0f);
+            } else if (mC > 0.65f && hC < 4.2f && worldZ < 155.0f) {
+                s.biomePrimary = BiomeId::TaigaPines;
+                s.biomeSecondary = BiomeId::SnowyTundra;
+                s.biomeBlend = std::clamp((0.75f - mC) / 0.10f, 0.0f, 1.0f);
+            } else {
+                s.biomePrimary = BiomeId::SnowyTundra;
+                s.biomeSecondary = (hC > 4.5f) ? BiomeId::AlpinePeak : BiomeId::GlacialIce;
+                s.biomeBlend = (hC > 4.5f) ? std::clamp((hC - 4.5f) / 1.5f, 0.0f, 1.0f) : 0.25f;
+            }
+            return s;
+        }
+
+        if (inDesertZone) {
+            float oDx = (worldX - 180.0f) / 16.0f;
+            float oDz = (worldZ - (-10.0f)) / 14.0f;
+            float inOasis = std::exp(-(oDx * oDx + oDz * oDz));
+
+            if (inOasis > 0.35f || mC > 0.40f) {
+                s.biomePrimary = BiomeId::DeciduousWoodland;
+                s.biomeSecondary = BiomeId::AridSteppe;
+                s.biomeBlend = std::clamp(1.0f - inOasis, 0.0f, 1.0f);
+            } else if (hC > 3.6f) {
+                s.biomePrimary = BiomeId::BadlandsCanyon;
+                s.biomeSecondary = BiomeId::AridSteppe;
+                s.biomeBlend = std::clamp((5.2f - hC) / 1.6f, 0.0f, 1.0f);
+            } else {
+                s.biomePrimary = BiomeId::AridSteppe;
+                s.biomeSecondary = (hC > 2.6f) ? BiomeId::BadlandsCanyon : BiomeId::AridSteppe;
+                s.biomeBlend = (hC > 2.6f) ? std::clamp((hC - 2.6f) / 1.0f, 0.0f, 1.0f) : 0.0f;
+            }
+            return s;
+        }
+    }
 
     if (hC <= 0.0f) {
         // Underwater: Ocean Deep to Coastal Shoals
