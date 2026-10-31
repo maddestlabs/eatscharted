@@ -395,11 +395,13 @@ fn getChartDiscovery(mapXZ : vec2<f32>) -> f32 {
     let relPos = (mapXZ - minCorner) / chunkSize;
 
     var gridD = 0.0;
-    if (relPos.x >= 0.0 && relPos.x <= (dim - 1.0) && relPos.y >= 0.0 && relPos.y <= (dim - 1.0)) {
-        let ix = clamp(floor(relPos.x), 0.0, dim - 2.0);
-        let iz = clamp(floor(relPos.y), 0.0, dim - 2.0);
-        let fx = relPos.x - ix;
-        let fz = relPos.y - iz;
+    if (relPos.x >= -0.2 && relPos.x <= (dim + 0.2) && relPos.y >= -0.2 && relPos.y <= (dim + 0.2)) {
+        // Center the sampling at chunk centers (0.5, 1.5, 2.5, 3.5, 4.5)
+        let samplePos = relPos - vec2<f32>(0.5, 0.5);
+        let ix = clamp(floor(samplePos.x), 0.0, dim - 2.0);
+        let iz = clamp(floor(samplePos.y), 0.0, dim - 2.0);
+        let fx = clamp(samplePos.x - ix, 0.0, 1.0);
+        let fz = clamp(samplePos.y - iz, 0.0, 1.0);
         let stride = i32(dim);
 
         let idx00 = i32(iz) * stride + i32(ix);
@@ -413,13 +415,23 @@ fn getChartDiscovery(mapXZ : vec2<f32>) -> f32 {
         let d11 = u.discoveryGrid[idx11 / 4][idx11 % 4];
 
         gridD = mix(mix(d00, d10, fx), mix(d01, d11, fx), fz);
+
+        // Smooth feathering at the outer perimeter of the active chunk grid (no rectangular cliff)
+        let edgeDistX = min(relPos.x, dim - relPos.x);
+        let edgeDistY = min(relPos.y, dim - relPos.y);
+        let gridFade = smoothstep(-0.1, 0.45, min(edgeDistX, edgeDistY));
+        gridD *= gridFade;
     }
 
     // Direct hero sight radius: 20m full sight, smooth organic fade to 32m
     let heroDist = length(mapXZ - u.heroPos.xz);
     let heroSight = 1.0 - smoothstep(20.0, 32.0, heroDist);
 
-    return clamp(max(gridD, heroSight), 0.0, 1.0);
+    // High-Altitude Atlas Zoom: reveal the macro continental map seamlessly without chunk boundaries
+    let atlasZoom = u.heroPos.w;
+    let atlasReveal = smoothstep(0.12, 0.75, atlasZoom);
+
+    return clamp(max(mix(max(gridD, heroSight), 1.0, atlasReveal), 0.0), 0.0, 1.0);
 }
 
 // Sky / Antique Vellum Backdrop Pass
@@ -444,6 +456,19 @@ fn vs_sky(@builtin(vertex_index) vertexIndex : u32) -> SkyOut {
 
 @fragment
 fn fs_sky(in : SkyOut) -> @location(0) vec4<f32> {
+    if (u.gridOrigin.w < 0.0) {
+        // Watabou One-Page Dungeon Mode: Subterranean Rock Canvas matching dungeon surrounding pattern!
+        // No open sky or stars in a subterranean dungeon!
+        let rockBase = vec3<f32>(0.72, 0.66, 0.56);
+        let inkColor = vec3<f32>(0.12, 0.08, 0.06);
+
+        // Backdrop diagonal striping matching the surrounding pattern
+        let h1 = abs(fract((in.uv.x + in.uv.y) * 16.0) - 0.5);
+        let hatch1 = 1.0 - smoothstep(0.08, 0.20, h1);
+        let dungeonBg = mix(rockBase, inkColor, hatch1 * 0.40);
+        return vec4<f32>(dungeonBg, 240.0);
+    }
+
     let t = clamp(in.uv.y, 0.0, 1.0);
     let grain = (fbmPaper(in.uv * 48.0) - 0.5) * 0.04;
     var skyCol = mix(u.skyZenith.rgb, u.skyHorizon.rgb, pow(t, 0.75)) + vec3<f32>(grain);
@@ -490,6 +515,8 @@ struct WorldVSOut {
     @location(5) @interpolate(flat) packedBiomes : u32,
     @location(6) @interpolate(flat) flags        : u32,
     @location(7) discovery     : vec2<f32>, // x = rawDisc, y = charted
+    @location(8) terrainColor  : vec4<f32>, // rgb = continuous watercolor tint, a = vegetation factor
+    @location(9) terrainParams : vec4<f32>, // x = arid factor, y = blend weight, z = unused, w = unused
 };
 
 @vertex
@@ -507,6 +534,58 @@ fn vs_world(@builtin(vertex_index) vertexIndex : u32) -> WorldVSOut {
     out.gradAndUV    = vec4<f32>(v.gradRiverBlend.xy, v.uvBiomesFlags.xy);
     out.packedBiomes = bitcast<u32>(v.uvBiomesFlags.z);
     out.flags        = bitcast<u32>(v.uvBiomesFlags.w);
+
+    let biome0 = out.packedBiomes & 255u;
+    let biome1 = (out.packedBiomes >> 8u) & 255u;
+    let blend  = clamp(v.gradRiverBlend.w, 0.0, 1.0);
+
+    // Direction C: Hardware Attribute Interpolation for continuous terrain color
+    // For overland terrain, ensure underwater vertices represent coastal sand on dry land
+    // so dry land fragments in shoreline quads never inherit ocean deep/shoal turquoise.
+    var landBiome0 = biome0;
+    if (landBiome0 <= 1u) {
+        landBiome0 = 2u; // SandyBeach
+    }
+    var landBiome1 = biome1;
+    if (landBiome1 <= 1u) {
+        landBiome1 = 2u; // SandyBeach
+    }
+
+    var baseCol0 = biomePaperTint(landBiome0);
+    var baseCol1 = biomePaperTint(landBiome1);
+    var baseCol  = baseCol0;
+    if (landBiome0 != landBiome1) {
+        baseCol = mix(baseCol0, baseCol1, blend);
+    }
+
+    // Continuous vegetation factor (1.0 = meadow/forest/taiga, 0.0 = beach/steppe/badlands/peak)
+    var veg0 = 0.0;
+    if (landBiome0 == 4u || landBiome0 == 5u || landBiome0 == 6u) {
+        veg0 = 1.0;
+    } else if (landBiome0 == 3u) {
+        veg0 = 0.40;
+    }
+    var veg1 = 0.0;
+    if (landBiome1 == 4u || landBiome1 == 5u || landBiome1 == 6u) {
+        veg1 = 1.0;
+    } else if (landBiome1 == 3u) {
+        veg1 = 0.40;
+    }
+    let vegFactor = mix(veg0, veg1, blend);
+
+    // Continuous arid factor (for AridSteppe & BadlandsCanyon)
+    var arid0 = 0.0;
+    if (landBiome0 == 7u || landBiome0 == 8u) {
+        arid0 = 1.0;
+    }
+    var arid1 = 0.0;
+    if (landBiome1 == 7u || landBiome1 == 8u) {
+        arid1 = 1.0;
+    }
+    let aridFactor = mix(arid0, arid1, blend);
+
+    out.terrainColor  = vec4<f32>(baseCol, vegFactor);
+    out.terrainParams = vec4<f32>(aridFactor, blend, 0.0, 0.0);
 
     // Apply hardware depth bias to ground-inscribed map banners & path text so they NEVER z-fight or clip into terrain
     if ((out.flags & 8u) != 0u) {
@@ -565,13 +644,16 @@ fn fs_world(in : WorldVSOut) -> @location(0) vec4<f32> {
     let mediumNoise = fbmPaper(mapXZ * 1.85 + vec2<f32>(macroNoise * 1.4, -macroNoise * 1.1));
     let fineGrain   = valueNoise2D(mapXZ * 9.5);
     let microGrain  = valueNoise2D(mapXZ * 24.0);
-    var col = biomePaperTint(biome0);
 
-    // Smooth organic biome blending & soil/moss mottling
-    if (biome0 != biome1 && biomeBlend > 0.1) {
-        let bCol1 = biomePaperTint(biome1);
-        let organicMix = clamp(biomeBlend + (mediumNoise - 0.5) * 0.35, 0.0, 1.0);
-        col = mix(col, bCol1, organicMix * 0.55);
+    // Continuous watercolor base tint smoothly interpolated across vertices (Direction C)
+    var col = in.terrainColor.rgb;
+
+    // Organic watercolor pigment bleed & drying-edge wash feathering (Direction A)
+    let edgeBlend = in.terrainParams.y;
+    if (edgeBlend > 0.04 && edgeBlend < 0.96) {
+        let dryingEdge = 1.0 - abs(edgeBlend - 0.50) * 2.0;
+        let pigmentConcentration = dryingEdge * (0.05 + 0.06 * mediumNoise);
+        col *= (1.0 - pigmentConcentration);
     }
     col *= (0.86 + 0.18 * mediumNoise + 0.08 * (fineGrain - 0.5) + 0.04 * (microGrain - 0.5));
 
@@ -580,26 +662,129 @@ fn fs_world(in : WorldVSOut) -> @location(0) vec4<f32> {
     let microNz = (mediumNoise - 0.5) * 0.16 - (fineGrain - 0.5) * 0.08;
     surfNormal = normalize(surfNormal + vec3<f32>(microNx, 0.0, microNz));
 
-    // 2. Watabou One-Page Dungeon Mode (Cross-Hatched Walls & Gridded Flagstones)
+    // 2. Watabou One-Page Dungeon Mode (2.5D Raised Walls, Inked Ashlar Masonry, Sunken Pools & Gridded Flagstones)
     if ((in.flags & 16u) != 0u) {
-        if (biome0 == 12u) {
-            let h1 = abs(fract((mapXZ.x + mapXZ.y) * 1.85) - 0.5);
-            let h2 = abs(fract((mapXZ.x - mapXZ.y) * 1.85) - 0.5);
-            let hatch1 = 1.0 - smoothstep(0.08, 0.18, h1);
-            let wallBorderDist = -sdfCoast;
-            let denseNearWall = smoothstep(3.8, 0.0, wallBorderDist);
-            let hatch2 = (1.0 - smoothstep(0.08, 0.18, h2)) * denseNearWall;
-            let wallStroke = smoothstep(0.32, 0.08, wallBorderDist);
-            let inkW = clamp(hatch1 * 0.65 + hatch2 * 0.55 + wallStroke, 0.0, 1.0);
-            col = mix(col, inkColor, inkW);
-        } else if (biome0 == 11u) {
-            let tileX = abs(fract(mapXZ.x * 0.5 + 0.5) - 0.5) * 2.0;
-            let tileZ = abs(fract(mapXZ.y * 0.5 + 0.5) - 0.5) * 2.0;
-            let seam = 1.0 - smoothstep(0.0, 0.06, min(tileX, tileZ));
-            let wallShadow = exp(-sdfCoast * 1.1) * 0.28;
-            col = mix(col * (1.0 - wallShadow), inkSoft, seam * 0.45);
+        let rockBase = vec3<f32>(0.72, 0.66, 0.56);
+        let flagBase = vec3<f32>(0.84, 0.79, 0.69);
+
+        // Vector-accurate Analytical Signed Distance Field evaluated per-pixel from mapXZ!
+        // This eliminates 100% of 1m grid discretization or diagonal triangle artifacts!
+        var analyticalDist = 100.0;
+        let roomCount = u32(u.discoveryGrid[11].x);
+        for (var ri = 0u; ri < roomCount; ri = ri + 1u) {
+            let rm = u.discoveryGrid[ri];
+            let cx = 0.5 * (rm.x + rm.z);
+            let cz = 0.5 * (rm.y + rm.w);
+            let hx = 0.5 * (rm.z - rm.x);
+            let hz = 0.5 * (rm.w - rm.y);
+            let dP = abs(mapXZ - vec2<f32>(cx, cz)) - vec2<f32>(hx, hz);
+            let dOut = length(max(dP, vec2<f32>(0.0)));
+            let dIn  = min(max(dP.x, dP.y), 0.0);
+            analyticalDist = min(analyticalDist, dOut + dIn);
         }
-    } else {
+
+        let corrCount = u32(u.discoveryGrid[11].y);
+        for (var ci = 0u; ci < corrCount; ci = ci + 1u) {
+            let corr = u.discoveryGrid[6u + ci];
+            let p0 = corr.xy;
+            let p1 = corr.zw;
+            let v = p1 - p0;
+            let lSq = dot(v, v);
+            var t = 0.0;
+            if (lSq > 0.0001) {
+                t = clamp(dot(mapXZ - p0, v) / lSq, 0.0, 1.0);
+            }
+            let p = p0 + t * v;
+            let d = length(mapXZ - p) - 1.8;
+            analyticalDist = min(analyticalDist, d);
+        }
+
+        // Distance to carved rooms: dRoom < 0 = inside room floor, dRoom > 0 = wall/surroundings
+        let dRoom = select(-sdfCoast, analyticalDist, roomCount > 0u);
+        let isFloor = smoothstep(0.04, -0.04, dRoom);
+
+        // Heavy dark India-ink wall casing perimeter stroke (Watabou style)
+        let wallBorderStroke = 1.0 - smoothstep(0.04, 0.22, abs(dRoom));
+
+        // 2.5D Raised Wall Shading: Ashlar masonry block courses along wall face (dRoom in [0.0, 1.4m])
+        let inWallFace = smoothstep(0.0, 0.12, dRoom) * (1.0 - smoothstep(1.25, 1.45, dRoom));
+        
+        // Horizontal ashlar block courses & vertical stone masonry joints
+        let courseY = fract(in.worldPos.y * 2.8);
+        let ashlarMortar = 1.0 - smoothstep(0.04, 0.14, courseY);
+        let stoneStagger = floor(in.worldPos.y * 2.8) * 0.5;
+        let ashlarJoint = 1.0 - smoothstep(0.04, 0.14, abs(fract((mapXZ.x + mapXZ.y) * 0.75 + stoneStagger) - 0.5));
+        let masonryStroke = clamp(ashlarMortar + ashlarJoint * 0.65, 0.0, 1.0);
+
+        // Cross-hatching for solid rock outside room (dRoom >= 0.0)
+        let h1 = abs(fract((mapXZ.x + mapXZ.y) * 1.85) - 0.5);
+        let h2 = abs(fract((mapXZ.x - mapXZ.y) * 1.85) - 0.5);
+        let hatch1 = 1.0 - smoothstep(0.08, 0.18, h1);
+        let denseNearWall = smoothstep(4.2, 0.0, dRoom);
+        let hatch2 = (1.0 - smoothstep(0.08, 0.18, h2)) * denseNearWall;
+        let rockInkW = clamp(hatch1 * 0.65 + hatch2 * 0.60, 0.0, 1.0);
+        var rockCol = mix(rockBase, inkColor, rockInkW);
+
+        // Apply ashlar masonry & shadow depth on the 2.5D wall face
+        if (inWallFace > 0.01) {
+            let wallFaceBase = mix(rockBase * 0.88, inkDark, masonryStroke * 0.42);
+            rockCol = mix(rockCol, wallFaceBase, inWallFace * 0.85);
+        }
+
+        // 2m flagstone grid tiles inside room (dRoom < 0.0)
+        let tileX = abs(fract(mapXZ.x * 0.5 + 0.5) - 0.5) * 2.0;
+        let tileZ = abs(fract(mapXZ.y * 0.5 + 0.5) - 0.5) * 2.0;
+        let seam = 1.0 - smoothstep(0.0, 0.06, min(tileX, tileZ));
+        let wallShadow = exp(-max(0.0, -dRoom) * 1.25) * 0.35;
+        var flagstoneCol = mix(flagBase * (1.0 - wallShadow), inkSoft, seam * 0.45);
+
+        // Subterranean flooded cistern pool (Vector-Smooth Analytical SDF Evaluation, ZERO Triangles!)
+        var waterDist = 100.0;
+        let poolCount = u32(u.discoveryGrid[11].z);
+        for (var pi = 0u; pi < poolCount; pi = pi + 1u) {
+            let wp = u.discoveryGrid[12u + pi];
+            let poolCenter = (wp.xy + wp.zw) * 0.5;
+            let poolHalf   = (wp.zw - wp.xy) * 0.5;
+            let dPoolP     = abs(mapXZ - poolCenter) - poolHalf;
+            let dOut       = length(max(dPoolP, vec2<f32>(0.0)));
+            let dIn        = min(max(dPoolP.x, dPoolP.y), 0.0);
+            waterDist = min(waterDist, dOut + dIn);
+        }
+        if (poolCount == 0u) {
+            waterDist = in.sdfs.z;
+        }
+
+        let inPool = 1.0 - smoothstep(-0.06, 0.06, waterDist);
+        if (inPool > 0.001) {
+            let waterBase = vec3<f32>(0.10, 0.42, 0.48); // Deep antique teal
+            let ripple = sin(time * 2.2 + (mapXZ.x + mapXZ.y) * 1.6) * 0.07 +
+                         cos(time * 1.7 + (mapXZ.x - mapXZ.y) * 1.4) * 0.04;
+            let waterPoolCol = waterBase + vec3<f32>(ripple * 0.5, ripple * 0.8, ripple);
+
+            // Inked stone coping rim separating flagstones from water
+            let poolRimStroke = 1.0 - smoothstep(0.04, 0.22, abs(waterDist));
+            let waterWithRim = mix(waterPoolCol, inkColor, poolRimStroke * 0.90);
+
+            // Sunken basin depth shading (darker towards center of pool)
+            let basinDepth = clamp(-waterDist / 1.8, 0.0, 1.0);
+            let shadedWater = mix(waterWithRim, vec3<f32>(0.04, 0.24, 0.28), basinDepth * 0.45);
+
+            flagstoneCol = mix(flagstoneCol, shadedWater, inPool);
+            isWater = inPool;
+        }
+
+        // Blend floor and solid rock based on continuous vector SDF
+        var dungeonCol = mix(rockCol, flagstoneCol, isFloor);
+
+        // Apply crisp India-ink wall casing stroke on the boundary
+        dungeonCol = mix(dungeonCol, inkColor, wallBorderStroke * 0.95);
+
+        col = dungeonCol;
+    }
+)";
+
+static const char* kSceneWgslPart2b = R"(
+    else {
         // 3. Overworld: Animated Wave Water + Vector Shoreline Rings vs. Realistic Noise-Textured Land
         let jitter = (mediumNoise - 0.5) * 0.35;
         let coastD = sdfCoast + jitter;
@@ -666,31 +851,37 @@ fn fs_world(in : WorldVSOut) -> @location(0) vec4<f32> {
 
             // A) Natural Wind-Rippled Coastal Sand Beach & Wet Shoreline Gradient
             let beachNoise = (mediumNoise - 0.5) * 0.95;
-            let beachSpan  = 3.6 + beachNoise;
+            let beachSpan  = 3.8 + beachNoise;
             if (coastD < beachSpan) {
-                let beachFactor = 1.0 - smoothstep(beachSpan * 0.45, beachSpan, coastD);
-                // Wet sand darkening right near the water's edge (coastD < 0.85)
-                let wetSand = 1.0 - smoothstep(0.0, 0.95, coastD);
+                let beachFactor = 1.0 - smoothstep(beachSpan * 0.35, beachSpan, coastD);
+                // Wet sand darkening right near the water's edge (coastD < 1.05)
+                let wetSand = 1.0 - smoothstep(0.0, 1.05, coastD);
                 let drySandCol = vec3<f32>(0.94, 0.86, 0.58) * (0.94 + 0.12 * fineGrain);
-                let wetSandCol = vec3<f32>(0.68, 0.60, 0.40) * (0.95 + 0.08 * microGrain);
-                let sandCol = mix(drySandCol, wetSandCol, wetSand * 0.75);
-                col = mix(col, sandCol, beachFactor);
+                let wetSandCol = vec3<f32>(0.66, 0.58, 0.38) * (0.95 + 0.08 * microGrain);
+                let sandCol = mix(drySandCol, wetSandCol, wetSand * 0.80);
+                let bleedEdge = smoothstep(beachSpan * 0.70, beachSpan, coastD);
+                let organicBleed = clamp(beachFactor + (fineGrain - 0.5) * 0.14 * bleedEdge, 0.0, 1.0);
+                col = mix(col, sandCol, organicBleed);
             }
 
-            // B) Grass & Woodland Organic Turf Mottling (Clover patches, humus & sunlit blades)
-            if (biome0 == 4u || biome0 == 5u || biome0 == 6u) {
+            // B) Grass & Woodland Organic Turf Mottling (Continuous via in.terrainColor.a)
+            let vegFactor = in.terrainColor.a;
+            if (vegFactor > 0.02) {
                 let turfPatch = smoothstep(0.35, 0.72, mediumNoise);
                 let lushHighlight = vec3<f32>(0.52, 0.82, 0.24);
                 let deepMoss      = vec3<f32>(0.18, 0.42, 0.16);
-                col = mix(col, lushHighlight, turfPatch * (fineGrain * 0.28));
-                col = mix(col, deepMoss, (1.0 - turfPatch) * (1.0 - fineGrain) * 0.24);
-            } else if (biome0 == 7u || biome0 == 8u) {
-                // C) Arid Steppe & Badlands Wind-Swept Sand/Terracotta Strata
+                let grassMod = mix(lushHighlight, deepMoss, (1.0 - turfPatch) * (1.0 - fineGrain));
+                col = mix(col, grassMod, vegFactor * 0.28);
+            }
+
+            // C) Arid Steppe & Badlands Wind-Swept Strata (Continuous via in.terrainParams.x)
+            let aridFactor = in.terrainParams.x;
+            if (aridFactor > 0.02) {
                 let strata = sin(mapXZ.x * 0.45 + mapXZ.y * 0.85 + mediumNoise * 4.5) * 0.5 + 0.5;
                 let warmOchre = vec3<f32>(0.95, 0.74, 0.36);
                 let rustScree = vec3<f32>(0.62, 0.34, 0.18);
-                col = mix(col, warmOchre, strata * 0.25);
-                col = mix(col, rustScree, (1.0 - strata) * microGrain * 0.28);
+                let strataCol = mix(warmOchre, rustScree, (1.0 - strata) * microGrain * 0.55);
+                col = mix(col, strataCol, aridFactor * 0.28);
             }
 
             // D) 3D Mountain & Cliff Rock Strata + Alpine Snow Accumulation
@@ -759,7 +950,7 @@ fn fs_world(in : WorldVSOut) -> @location(0) vec4<f32> {
     }
 )";
 
-static const char* kSceneWgslPart2b = R"(
+static const char* kSceneWgslPart2c = R"(
     // 3.5. Diegetic Fog-of-War & Ink Bloom Discovery Front
     let rawDisc = in.discovery.x;
     let paperBleed = (mediumNoise - 0.5) * 0.28;
@@ -1448,7 +1639,8 @@ void fillSceneUniforms(const ChartWorld& world, uint32_t width, uint32_t height,
     outU.gridOrigin[0] = static_cast<float>(world.activeChunkX());
     outU.gridOrigin[1] = static_cast<float>(world.activeChunkZ());
     outU.gridOrigin[2] = ChartWorld::kChunkSize;
-    outU.gridOrigin[3] = static_cast<float>(ChartWorld::kChunkRadius);
+    outU.gridOrigin[3] = world.voronoi().isDungeonMode() ? -static_cast<float>(ChartWorld::kChunkRadius)
+                                                          : static_cast<float>(ChartWorld::kChunkRadius);
 
     world.fillDiscoveryGrid(world.activeChunkX(), world.activeChunkZ(), outU.discoveryGrid);
 }
@@ -1667,7 +1859,7 @@ struct GpuChartContext {
     }
 
     bool createPipelinesAndResources(uint32_t width, uint32_t height, const InkAtlasData& atlas) {
-        std::string sceneWgsl = std::string(kSceneWgslPart1) + kSceneWgslPart2a + kSceneWgslPart2b + kSceneWgslPart3;
+        std::string sceneWgsl = std::string(kSceneWgslPart1) + kSceneWgslPart2a + kSceneWgslPart2b + kSceneWgslPart2c + kSceneWgslPart3;
         WGPUShaderModule shadowSM  = createShaderModule(device, kShadowWgslSource);
         WGPUShaderModule sceneSM   = createShaderModule(device, sceneWgsl.c_str());
         WGPUShaderModule postSM    = createShaderModule(device, kPostProcessWgslSource);
@@ -2570,6 +2762,8 @@ struct ChartLoopContext {
     bool was2{false};
     bool was3{false};
     bool was4{false};
+    bool was5{false};
+    bool was6{false};
     bool wasT{false};
     bool wasLeftBracket{false};
     bool wasRightBracket{false};
@@ -2659,6 +2853,14 @@ static void renderSingleFrame(ChartLoopContext& l) {
     bool k4 = glfwGetKey(l.window, GLFW_KEY_4) == GLFW_PRESS;
     if (k4 && !l.was4) switchChartScene(l, "scenes/sunken_sanctum_dungeon.eats");
     l.was4 = k4;
+
+    bool k5 = glfwGetKey(l.window, GLFW_KEY_5) == GLFW_PRESS;
+    if (k5 && !l.was5) switchChartScene(l, "scenes/sunscorched_wastes.eats");
+    l.was5 = k5;
+
+    bool k6 = glfwGetKey(l.window, GLFW_KEY_6) == GLFW_PRESS;
+    if (k6 && !l.was6) switchChartScene(l, "scenes/procedural_dungeon.eats");
+    l.was6 = k6;
 
     // Cat Quest Tabletop Hero Movement (Keyboard + Mobile Analog Touch Stick)
     float mx = l.touchMoveX;
@@ -3021,6 +3223,14 @@ EMSCRIPTEN_KEEPALIVE const char* eatscharted_get_region_sub() {
         return s_activeLoop->world->hero().activeRegionSub.c_str();
     }
     return "Royal Cartographer's Harbor";
+}
+EMSCRIPTEN_KEEPALIVE void eatscharted_trigger_locale_discovery(const char* name, const char* sub) {
+    if (s_activeLoop && s_activeLoop->world) {
+        s_activeLoop->world->triggerLocaleDiscovery(name ? name : "", sub ? sub : "");
+    }
+}
+EMSCRIPTEN_KEEPALIVE int eatscharted_is_locale_banner_active() {
+    return (s_activeLoop && s_activeLoop->world && s_activeLoop->world->isLocaleBannerActive()) ? 1 : 0;
 }
 }
 #endif

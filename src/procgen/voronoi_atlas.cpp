@@ -117,6 +117,12 @@ void VoronoiAtlas::generate(uint32_t seed, AtlasPreset preset) {
 }
 
 float VoronoiAtlas::rawElevationAt(float wx, float wz) const noexcept {
+    if (preset_ == AtlasPreset::ContinentalPangaea) {
+        return rawElevationContinental(wx, wz);
+    }
+    if (preset_ == AtlasPreset::SunscorchedWastes) {
+        return rawElevationDesert(wx, wz);
+    }
     // Domain-warped fractal perturbation for authentic Watabou Perilous Shores jagged coastlines
     float warpX = fbmNoise(wx * 0.018f, wz * 0.018f, seed_ + 17u, 3) * 14.0f;
     float warpZ = fbmNoise(wx * 0.018f + 9.3f, wz * 0.018f - 4.7f, seed_ + 31u, 3) * 14.0f;
@@ -177,6 +183,12 @@ float VoronoiAtlas::rawElevationAt(float wx, float wz) const noexcept {
 }
 
 float VoronoiAtlas::rawMoistureAt(float wx, float wz) const noexcept {
+    if (preset_ == AtlasPreset::ContinentalPangaea) {
+        return rawMoistureContinental(wx, wz);
+    }
+    if (preset_ == AtlasPreset::SunscorchedWastes) {
+        return rawMoistureDesert(wx, wz);
+    }
     if (preset_ == AtlasPreset::PerilousPeninsula) {
         // High moisture in northern/western peninsula interior (Duskwoods), arid in central/southern plains (Dragon Desert)
         float forestBias = std::exp(-((wx + 8.0f) * (wx + 8.0f) + (wz - 34.0f) * (wz - 34.0f)) / (22.0f * 22.0f)) * 0.78f;
@@ -186,6 +198,247 @@ float VoronoiAtlas::rawMoistureAt(float wx, float wz) const noexcept {
     }
     float m = 0.52f + fbmNoise(wx * 0.021f + 31.0f, wz * 0.021f - 19.0f, seed_ + 211u, 4) * 0.48f;
     return std::clamp(m, 0.0f, 1.0f);
+}
+
+float VoronoiAtlas::rawElevationDesert(float wx, float wz, Vec2f center, float radius) const noexcept {
+    float qx = wx - center.x;
+    float qz = wz - center.y;
+
+    // Domain-warped coordinates for organic dune ripples and sinuous sandstone strata
+    float warpX = fbmNoise(qx * 0.016f, qz * 0.016f, seed_ + 41u, 3) * 14.0f;
+    float warpZ = fbmNoise(qx * 0.016f + 7.2f, qz * 0.016f - 5.4f, seed_ + 67u, 3) * 14.0f;
+    float px = qx + warpX;
+    float pz = qz + warpZ;
+
+    // 1. Windblown Sand Dunes (Transverse waves with steep slip-faces)
+    float dunePhase = px * 0.072f + pz * 0.038f + fbmNoise(px * 0.024f, pz * 0.024f, seed_ + 83u, 2) * 2.2f;
+    float duneWave = std::sin(dunePhase);
+    float dune = std::pow(std::max(0.0f, duneWave), 1.6f) * 0.95f;
+
+    // 2. Terraced Sandstone Mesas & Buttes
+    float mesaNoise = fbmNoise(px * 0.022f + 14.0f, pz * 0.022f - 9.0f, seed_ + 109u, 3);
+    float mesaTier1 = std::clamp((mesaNoise - 0.18f) / 0.10f, 0.0f, 1.0f) * 2.4f;
+    float mesaTier2 = std::clamp((mesaNoise - 0.48f) / 0.08f, 0.0f, 1.0f) * 2.2f;
+    float mesaEdge = (1.0f - std::abs(fbmNoise(px * 0.045f, pz * 0.045f, seed_ + 131u, 2))) * 0.45f;
+    float mesa = mesaTier1 + mesaTier2 + mesaEdge * (mesaTier1 > 0.1f ? 1.0f : 0.0f);
+
+    // 3. Sunken Wadi / Arroyo (Dry wash meandering across desert)
+    float wadiCurve = std::sin(px * 0.042f) * 16.0f - 4.0f;
+    float wadiDist = std::abs(pz - wadiCurve);
+    float wadiCarve = std::clamp(1.0f - (wadiDist / 7.5f), 0.0f, 1.0f);
+    float wadi = -std::pow(wadiCarve, 1.6f) * 1.7f;
+
+    // 4. Al-Zahra Oasis Depression (Sunken emerald pool at offset (12, -6) from desert center)
+    float oasisDx = (qx - 12.0f) / 15.0f;
+    float oasisDz = (qz + 6.0f) / 13.0f;
+    float oasisDistSq = oasisDx * oasisDx + oasisDz * oasisDz;
+    float oasisCarve = std::clamp(1.0f - std::sqrt(oasisDistSq), 0.0f, 1.0f);
+    float oasisH = -std::pow(oasisCarve, 2.0f) * 1.85f;
+
+    // 5. Desert scree & micro-topography
+    float scree = fbmNoise(px * 0.055f, pz * 0.055f, seed_ + 173u, 3) * 0.35f;
+
+    float h = 1.6f + dune + mesa + wadi + oasisH + scree;
+
+    if (radius > 0.0f) {
+        float r = std::sqrt(qx * qx + qz * qz);
+        if (r > radius * 0.80f) {
+            float fade = std::clamp(1.0f - (r - radius * 0.80f) / (radius * 0.20f), 0.0f, 1.0f);
+            h = h * fade;
+        }
+    }
+    return h;
+}
+
+float VoronoiAtlas::rawMoistureDesert(float wx, float wz, Vec2f center, float radius) const noexcept {
+    float qx = wx - center.x;
+    float qz = wz - center.y;
+
+    // General desert aridity baseline: 0.08 to 0.16 (triggers AridSteppe & BadlandsCanyon)
+    float baseM = 0.11f + fbmNoise(qx * 0.022f + 29.0f, qz * 0.022f - 17.0f, seed_ + 199u, 2) * 0.05f;
+
+    // Al-Zahra Oasis spike: Concentrated lush moisture pulse centered at (12, -6)
+    float oasisDx = (qx - 12.0f) / 14.0f;
+    float oasisDz = (qz + 6.0f) / 12.0f;
+    float oasisDistSq = oasisDx * oasisDx + oasisDz * oasisDz;
+    float oasisMoisture = std::exp(-oasisDistSq * 2.2f) * 0.82f;
+
+    // Slight moisture seepage along the dry wadi floor
+    float wadiCurve = std::sin(qx * 0.042f) * 16.0f - 4.0f;
+    float wadiDist = std::abs(qz - wadiCurve);
+    float wadiMoisture = std::clamp(1.0f - (wadiDist / 9.0f), 0.0f, 1.0f) * 0.22f;
+
+    float m = baseM + oasisMoisture + wadiMoisture;
+    if (radius > 0.0f) {
+        float r = std::sqrt(qx * qx + qz * qz);
+        if (r > radius * 0.80f) {
+            float fade = std::clamp((r - radius * 0.80f) / (radius * 0.20f), 0.0f, 1.0f);
+            m = m * (1.0f - fade) + 0.50f * fade;
+        }
+    }
+    return std::clamp(m, 0.0f, 1.0f);
+}
+
+float VoronoiAtlas::rawElevationContinental(float wx, float wz) const noexcept {
+    // 1. Provincial centers and spatial spread parameters
+    const Vec2f cHighlands{0.0f, 75.0f};
+    const Vec2f cDesert{75.0f, 0.0f};
+    const Vec2f cPeninsula{-75.0f, 0.0f};
+    const Vec2f cArchipelago{0.0f, -75.0f};
+    const Vec2f cCrossroads{0.0f, 0.0f};
+
+    const float sigmaProv = 46.0f;
+    const float sigmaCenter = 32.0f;
+    const float inv2SigmaProvSq = 1.0f / (2.0f * sigmaProv * sigmaProv);
+    const float inv2SigmaCenterSq = 1.0f / (2.0f * sigmaCenter * sigmaCenter);
+
+    float dSqHighlands = (wx - cHighlands.x) * (wx - cHighlands.x) + (wz - cHighlands.y) * (wz - cHighlands.y);
+    float dSqDesert = (wx - cDesert.x) * (wx - cDesert.x) + (wz - cDesert.y) * (wz - cDesert.y);
+    float dSqPeninsula = (wx - cPeninsula.x) * (wx - cPeninsula.x) + (wz - cPeninsula.y) * (wz - cPeninsula.y);
+    float dSqArchipelago = (wx - cArchipelago.x) * (wx - cArchipelago.x) + (wz - cArchipelago.y) * (wz - cArchipelago.y);
+    float dSqCenter = (wx - cCrossroads.x) * (wx - cCrossroads.x) + (wz - cCrossroads.y) * (wz - cCrossroads.y);
+
+    float wHighlands = std::exp(-dSqHighlands * inv2SigmaProvSq);
+    float wDesert = std::exp(-dSqDesert * inv2SigmaProvSq);
+    float wPeninsula = std::exp(-dSqPeninsula * inv2SigmaProvSq);
+    float wArchipelago = std::exp(-dSqArchipelago * inv2SigmaProvSq);
+    float wCenter = std::exp(-dSqCenter * inv2SigmaCenterSq);
+
+    float totalW = wHighlands + wDesert + wPeninsula + wArchipelago + wCenter;
+    if (totalW > 1e-5f) {
+        float invW = 1.0f / totalW;
+        wHighlands *= invW;
+        wDesert *= invW;
+        wPeninsula *= invW;
+        wArchipelago *= invW;
+        wCenter *= invW;
+    } else {
+        wCenter = 1.0f;
+    }
+
+    // 2. Evaluate each provincial elevation model in local relative coordinates
+    // A. Highland Kingdom (North)
+    float qxH = wx - cHighlands.x;
+    float qzH = wz - cHighlands.y;
+    float warpHX = fbmNoise(qxH * 0.018f, qzH * 0.018f, seed_ + 17u, 3) * 12.0f;
+    float warpHZ = fbmNoise(qxH * 0.018f + 9.3f, qzH * 0.018f - 4.7f, seed_ + 31u, 3) * 12.0f;
+    float pxH = qxH + warpHX;
+    float pzH = qzH + warpHZ;
+    float detailH = fbmNoise(pxH * 0.032f, pzH * 0.032f, seed_ + 53u, 5);
+    float ridgeH = 1.0f - std::abs(fbmNoise(pxH * 0.022f, pzH * 0.022f, seed_ + 79u, 4));
+    ridgeH = ridgeH * ridgeH;
+    float valleyDist = std::abs(pxH - std::sin(pzH * 0.035f) * 18.0f);
+    float valleyProfile = std::clamp((valleyDist - 8.0f) / 36.0f, -0.1f, 1.2f);
+    float cragsH = (1.0f - std::abs(fbmNoise(pxH * 0.045f, pzH * 0.045f, seed_ + 117u, 3))) * ridgeH * 0.65f;
+    float moundsH = std::pow(std::max(0.0f, fbmNoise(pxH * 0.042f, pzH * 0.042f, seed_ + 71u, 3)), 1.7f) * 0.60f;
+    float hHighlands = (valleyProfile * 0.90f + detailH * 0.40f + cragsH + moundsH + 0.35f) * 6.8f;
+
+    // B. Sunscorched Wastes (East)
+    float hDesert = rawElevationDesert(wx, wz, cDesert, 0.0f);
+
+    // C. Perilous Peninsula (West)
+    float qxP = wx - cPeninsula.x;
+    float qzP = wz - cPeninsula.y;
+    float warpPX = fbmNoise(qxP * 0.018f, qzP * 0.018f, seed_ + 17u, 3) * 14.0f;
+    float warpPZ = fbmNoise(qxP * 0.018f + 9.3f, qzP * 0.018f - 4.7f, seed_ + 31u, 3) * 14.0f;
+    float pxP = qxP + warpPX;
+    float pzP = qzP + warpPZ;
+    float detailP = fbmNoise(pxP * 0.032f, pzP * 0.032f, seed_ + 53u, 5);
+    float mainlandBias = (pzP * 0.014f) + (-pxP * 0.014f) + 0.30f;
+    float bayDx = (pxP + 12.0f) / 28.0f;
+    float bayDz = (pzP + 16.0f) / 24.0f;
+    float bayCarve = std::exp(-(bayDx * bayDx + bayDz * bayDz) * 1.5f) * 0.85f;
+    float isl1Dx = (pxP + 32.0f) / 16.0f;
+    float isl1Dz = (pzP + 28.0f) / 14.0f;
+    float isl1 = std::exp(-(isl1Dx * isl1Dx + isl1Dz * isl1Dz) * 1.6f) * 0.65f;
+    float moundsP = std::pow(std::max(0.0f, fbmNoise(pxP * 0.048f + 5.2f, pzP * 0.048f - 3.1f, seed_ + 89u, 3)), 1.8f) * 0.72f;
+    float hPeninsula = (mainlandBias - bayCarve + isl1 + moundsP + detailP * 0.35f) * 5.8f;
+
+    // D. Shattered Archipelago (South)
+    float qxA = wx - cArchipelago.x;
+    float qzA = wz - cArchipelago.y;
+    float warpAX = fbmNoise(qxA * 0.018f, qzA * 0.018f, seed_ + 17u, 3) * 14.0f;
+    float warpAZ = fbmNoise(qxA * 0.018f + 9.3f, qzA * 0.018f - 4.7f, seed_ + 31u, 3) * 14.0f;
+    float pxA = qxA + warpAX;
+    float pzA = qzA + warpAZ;
+    float rA = std::sqrt(pxA * pxA + pzA * pzA);
+    float ringA = std::exp(-std::pow((rA - 32.0f) / 18.0f, 2.0f)) * 0.65f;
+    float centerIsleA = std::exp(-(pxA * pxA + pzA * pzA) / (16.0f * 16.0f)) * 0.80f;
+    float moundsA = std::pow(std::max(0.0f, fbmNoise(pxA * 0.05f, pzA * 0.05f, seed_ + 89u, 3)), 1.6f) * 0.55f;
+    float archipelagoNoise = fbmNoise(pxA * 0.028f, pzA * 0.028f, seed_ + 113u, 5) * 0.80f;
+    float hArchipelago = (ringA + centerIsleA + archipelagoNoise + moundsA - 0.22f) * 5.6f;
+
+    // E. Central Crossroads Plateau (Center)
+    float cDetail = fbmNoise(wx * 0.028f, wz * 0.028f, seed_ + 151u, 3) * 0.45f;
+    float cMounds = std::pow(std::max(0.0f, fbmNoise(wx * 0.045f, wz * 0.045f, seed_ + 167u, 2)), 1.5f) * 0.60f;
+    float hCenter = 1.75f + cDetail + cMounds;
+
+    // 3. Normalized province blend
+    float hBlended = wHighlands * hHighlands +
+                     wDesert * hDesert +
+                     wPeninsula * hPeninsula +
+                     wArchipelago * hArchipelago +
+                     wCenter * hCenter;
+
+    // 4. Continental shelf falloff into open sea beyond all provinces
+    float rOrigin = std::sqrt(wx * wx + wz * wz);
+    if (rOrigin > 112.0f) {
+        float oceanFade = std::clamp((rOrigin - 112.0f) / 36.0f, 0.0f, 1.0f);
+        hBlended = hBlended * (1.0f - oceanFade) + (-3.6f) * oceanFade;
+    }
+
+    return hBlended;
+}
+
+float VoronoiAtlas::rawMoistureContinental(float wx, float wz) const noexcept {
+    const Vec2f cHighlands{0.0f, 75.0f};
+    const Vec2f cDesert{75.0f, 0.0f};
+    const Vec2f cPeninsula{-75.0f, 0.0f};
+    const Vec2f cArchipelago{0.0f, -75.0f};
+    const Vec2f cCrossroads{0.0f, 0.0f};
+
+    const float sigmaProv = 46.0f;
+    const float sigmaCenter = 32.0f;
+    const float inv2SigmaProvSq = 1.0f / (2.0f * sigmaProv * sigmaProv);
+    const float inv2SigmaCenterSq = 1.0f / (2.0f * sigmaCenter * sigmaCenter);
+
+    float dSqHighlands = (wx - cHighlands.x) * (wx - cHighlands.x) + (wz - cHighlands.y) * (wz - cHighlands.y);
+    float dSqDesert = (wx - cDesert.x) * (wx - cDesert.x) + (wz - cDesert.y) * (wz - cDesert.y);
+    float dSqPeninsula = (wx - cPeninsula.x) * (wx - cPeninsula.x) + (wz - cPeninsula.y) * (wz - cPeninsula.y);
+    float dSqArchipelago = (wx - cArchipelago.x) * (wx - cArchipelago.x) + (wz - cArchipelago.y) * (wz - cArchipelago.y);
+    float dSqCenter = (wx - cCrossroads.x) * (wx - cCrossroads.x) + (wz - cCrossroads.y) * (wz - cCrossroads.y);
+
+    float wHighlands = std::exp(-dSqHighlands * inv2SigmaProvSq);
+    float wDesert = std::exp(-dSqDesert * inv2SigmaProvSq);
+    float wPeninsula = std::exp(-dSqPeninsula * inv2SigmaProvSq);
+    float wArchipelago = std::exp(-dSqArchipelago * inv2SigmaProvSq);
+    float wCenter = std::exp(-dSqCenter * inv2SigmaCenterSq);
+
+    float totalW = wHighlands + wDesert + wPeninsula + wArchipelago + wCenter;
+    if (totalW > 1e-5f) {
+        float invW = 1.0f / totalW;
+        wHighlands *= invW;
+        wDesert *= invW;
+        wPeninsula *= invW;
+        wArchipelago *= invW;
+        wCenter *= invW;
+    } else {
+        wCenter = 1.0f;
+    }
+
+    float mHighlands = 0.72f + fbmNoise(wx * 0.021f, wz * 0.021f, seed_ + 211u, 3) * 0.15f;
+    float mDesert = rawMoistureDesert(wx, wz, cDesert, 0.0f);
+    float mPeninsula = 0.58f + fbmNoise(wx * 0.021f, wz * 0.021f, seed_ + 223u, 3) * 0.15f;
+    float mArchipelago = 0.62f + fbmNoise(wx * 0.021f, wz * 0.021f, seed_ + 239u, 3) * 0.15f;
+    float mCenter = 0.52f + fbmNoise(wx * 0.021f, wz * 0.021f, seed_ + 251u, 3) * 0.12f;
+
+    float mBlended = wHighlands * mHighlands +
+                     wDesert * mDesert +
+                     wPeninsula * mPeninsula +
+                     wArchipelago * mArchipelago +
+                     wCenter * mCenter;
+
+    return std::clamp(mBlended, 0.0f, 1.0f);
 }
 
 void VoronoiAtlas::addWindingRiver(Vec2f start, Vec2f mid, Vec2f mouth, float startWidth, float endWidth) {
@@ -227,10 +480,10 @@ void VoronoiAtlas::addCurvedRoad(Vec2f a, Vec2f ctrl, Vec2f b, bool isHighway) {
 
 void VoronoiAtlas::generateOverworldGraph() {
     // 1. Generate relaxed Voronoi sites across [-96m, +96m] domain
-    constexpr int kGridN = 12;
-    constexpr float kDomainMin = -96.0f;
-    constexpr float kDomainMax =  96.0f;
-    constexpr float kCellStep  = (kDomainMax - kDomainMin) / static_cast<float>(kGridN);
+    const int kGridN = (preset_ == AtlasPreset::ContinentalPangaea) ? 16 : 12;
+    const float kDomainMin = (preset_ == AtlasPreset::ContinentalPangaea) ? -128.0f : -96.0f;
+    const float kDomainMax = (preset_ == AtlasPreset::ContinentalPangaea) ?  128.0f :  96.0f;
+    const float kCellStep = (kDomainMax - kDomainMin) / static_cast<float>(kGridN);
 
     cells_.reserve(kGridN * kGridN);
     int idCounter = 0;
@@ -297,6 +550,18 @@ void VoronoiAtlas::generateOverworldGraph() {
     }
 
     // 2. Synthesize Watabou-style Winding Rivers from high hills down to the coast
+    if (preset_ == AtlasPreset::ContinentalPangaea) {
+        // The Great Silver River: Northern snowmelt peaks descending through Highland valley to the Crossroads
+        addWindingRiver({-4.0f, 96.0f}, {0.0f, 48.0f}, {0.0f, 8.0f}, 1.4f, 2.8f);
+        // Western River Fork: Crossroads through Kildland meadows into Lowmillburg Bay
+        addWindingRiver({0.0f, 8.0f}, {-36.0f, 4.0f}, {-84.0f, -14.0f}, 1.8f, 3.2f);
+        // Southern River Fork: Crossroads down to the coastal delta into the Shattered Sea
+        addWindingRiver({0.0f, 8.0f}, {4.0f, -24.0f}, {6.0f, -54.0f}, 1.8f, 3.0f);
+        // Wadi Al-Zahra: Dry desert arroyo carving from northeast dunes into oasis depression
+        addWindingRiver({92.0f, 16.0f}, {84.0f, 2.0f}, {75.0f, -6.0f}, 0.6f, 1.2f);
+    } else if (preset_ == AtlasPreset::SunscorchedWastes) {
+        addWindingRiver({16.0f, -3.0f}, {12.0f, -6.0f}, {9.0f, -8.0f}, 0.5f, 1.1f);
+    } else
     if (preset_ == AtlasPreset::PerilousPeninsula) {
         // Meandering river starting in alpine mountains past Shattered Palace and Dragon Desert to the sea
         addWindingRiver({-12.0f, 6.0f}, {8.0f, -2.0f}, {32.0f, -8.0f}, 0.85f, 2.2f);
@@ -320,7 +585,53 @@ void VoronoiAtlas::generateOverworldGraph() {
         pois_.push_back(p);
     };
 
-    if (preset_ == AtlasPreset::PerilousPeninsula) {
+    if (preset_ == AtlasPreset::ContinentalPangaea) {
+        // 1. Highland Kingdom (North Sector)
+        addPoi(PoiCategory::CitadelKeep,      0.0f,  78.0f, "HIGHGUARD KEEP",    "Twin-Bridge Mountain Fortress", 3);
+        addPoi(PoiCategory::MarketHamlet,   -18.0f,  54.0f, "MEADOWBROOK",       "Valley River Trading Post",     1);
+        addPoi(PoiCategory::AlpineMonastery, 24.0f,  92.0f, "FROSTPEAK EYRIE",   "Cloud-Capped Astrologer Spire", 6);
+        addPoi(PoiCategory::DungeonPortal,  -26.0f,  84.0f, "BLACKHOLLOW DELVE", "Lv. 5 Deep Mine Portal",       5);
+
+        // 2. The Perilous Peninsula (West Sector)
+        addPoi(PoiCategory::CitadelKeep,    -70.0f,  -4.0f, "LOWMILLBURG",       "Western Walled Castle & Port",  3);
+        addPoi(PoiCategory::Windmill,       -76.0f,  -8.0f, "LOWMILL GRANGE",    "Farmland Grain Terraces",       1);
+        addPoi(PoiCategory::Windmill,       -65.0f,  -9.0f, "WESTVALE MILL",     "Coastal Valley Windmill",       1);
+        addPoi(PoiCategory::MarketHamlet,   -58.0f,  22.0f, "COLDHEARTFIELD",    "Terracotta Hamlet & Fields",    2);
+        addPoi(PoiCategory::PortHarbor,     -50.0f, -22.0f, "STORMPOOL",         "Cape Harbor & Anchorage",       2);
+        addPoi(PoiCategory::Lighthouse,     -45.0f, -20.0f, "STORMPOOL BEACON",  "Watchtower of the Shoals",      2);
+        addPoi(PoiCategory::DungeonPortal,  -82.0f,  14.0f, "SHATTERED PALACE",  "Ancient Sunken Necropolis",     4);
+        addPoi(PoiCategory::AlpineMonastery,-72.0f,  44.0f, "STARFALL ABBEY",    "Highland Astrologer Spire",     5);
+
+        // 3. The Sunscorched Wastes (East Sector)
+        addPoi(PoiCategory::MarketHamlet,    72.0f,  -4.0f, "AL-ZAHRA OASIS",    "Emerald Spring & Caravanserai", 1);
+        addPoi(PoiCategory::DungeonPortal,   86.0f,  26.0f, "TOMB OF SAND KINGS","Lv. 6 Sunken Sepulcher",       6);
+        addPoi(PoiCategory::CitadelKeep,     64.0f,  32.0f, "DUSTDEVIL OUTPOST", "Dune Garrison & Watchpost",    3);
+        addPoi(PoiCategory::AlpineMonastery, 54.0f, -22.0f, "SUNWATCH MINARET",  "Desert Astrologer Spire",      4);
+        addPoi(PoiCategory::StandingStones,  68.0f, -32.0f, "THE CRACKED ARCH",  "Sun-Baked Monoliths",           2);
+        addPoi(PoiCategory::BossLair,        94.0f, -28.0f, "SCORPION'S GULCH",  "Lv. 8 Chitin Behemoth Lair",   8);
+
+        // 4. The Shattered Archipelago (South Sector)
+        addPoi(PoiCategory::PortHarbor,       0.0f, -76.0f, "CORSAIR'S HAVEN",   "Pirate Atoll Anchorage",       2);
+        addPoi(PoiCategory::Lighthouse,     -28.0f, -88.0f, "STORMGLASS TOWER",  "Western Reef Beacon",          3);
+        addPoi(PoiCategory::DungeonPortal,   26.0f, -60.0f, "ABYSSAL GROTTO",    "Lv. 5 Flooded Vault",          5);
+        addPoi(PoiCategory::SunkenRuin,     -22.0f, -54.0f, "SIREN'S ARCH",      "Coral-Draped Temple",          4);
+        addPoi(PoiCategory::BossLair,        32.0f, -92.0f, "LEVIATHAN REEF",    "Lv. 10 Mauler of the Deep",   10);
+
+        // 5. The Imperial Crossroads (Center)
+        addPoi(PoiCategory::MarketHamlet,     0.0f,   0.0f, "IMPERIAL CROSSROADS","Grand Trade Center & Inn",     1);
+    } else if (preset_ == AtlasPreset::SunscorchedWastes) {
+        std::string oasisName  = (seed_ == 1066u) ? "AL-ZAHRA OASIS" : ProceduralNameGenerator::generateLocaleName(seed_ + 1u, BiomeId::DeciduousWoodland, PoiCategory::MarketHamlet);
+        std::string tombName   = (seed_ == 1066u) ? "TOMB OF THE SAND KINGS" : ProceduralNameGenerator::generateLocaleName(seed_ + 2u, BiomeId::BadlandsCanyon, PoiCategory::DungeonPortal);
+        std::string outName    = (seed_ == 1066u) ? "DUSTDEVIL OUTPOST" : ProceduralNameGenerator::generateLocaleName(seed_ + 3u, BiomeId::AridSteppe, PoiCategory::CitadelKeep);
+        std::string spireName  = (seed_ == 1066u) ? "SUNWATCH MINARET" : ProceduralNameGenerator::generateLocaleName(seed_ + 4u, BiomeId::BadlandsCanyon, PoiCategory::AlpineMonastery);
+
+        addPoi(PoiCategory::MarketHamlet,    12.0f,  -6.0f, oasisName.c_str(),  "Emerald Spring & Caravanserai", 1);
+        addPoi(PoiCategory::DungeonPortal,   24.0f,  26.0f, tombName.c_str(),   "Lv. 6 Sunken Sepulcher",        6);
+        addPoi(PoiCategory::CitadelKeep,     -6.0f,  32.0f, outName.c_str(),    "Northern Dune Garrison",        3);
+        addPoi(PoiCategory::AlpineMonastery,-28.0f, -22.0f, spireName.c_str(),  "Desert Astrologer Spire",       4);
+        addPoi(PoiCategory::StandingStones, -18.0f,   8.0f, "THE CRACKED ARCH", "Ancient Sun-Baked Monoliths",   2);
+        addPoi(PoiCategory::BossLair,        32.0f, -28.0f, "SCORPION'S GULCH", "Lv. 8 Chitin Behemoth Lair",    8);
+    } else if (preset_ == AtlasPreset::PerilousPeninsula) {
         std::string townName   = (seed_ == 1492u) ? "LOWMILLBURG" : ProceduralNameGenerator::generateLocaleName(seed_ + 1u, BiomeId::LushMeadow, PoiCategory::CitadelKeep);
         std::string hamletName = (seed_ == 1492u) ? "COLDHEARTFIELD" : ProceduralNameGenerator::generateLocaleName(seed_ + 2u, BiomeId::LushMeadow, PoiCategory::MarketHamlet);
         std::string portName   = (seed_ == 1492u) ? "STORMPOOL" : ProceduralNameGenerator::generateLocaleName(seed_ + 3u, BiomeId::CoastalShoals, PoiCategory::PortHarbor);
@@ -351,7 +662,46 @@ void VoronoiAtlas::generateOverworldGraph() {
     }
 
     // 4. Synthesize Spline Trade Roads & Dashed Wilderness Trails between POIs
-    if (preset_ == AtlasPreset::PerilousPeninsula) {
+    if (preset_ == AtlasPreset::ContinentalPangaea) {
+        // Imperial Highway 1: Highguard Keep -> Crossroads -> Southern Cape (Corsair Ferry)
+        addCurvedRoad({0.0f, 78.0f},  {0.0f, 40.0f},   {0.0f, 0.0f},   true);
+        addCurvedRoad({0.0f, 0.0f},   {0.0f, -26.0f},  {0.0f, -52.0f}, true);
+
+        // Imperial Highway 2: Lowmillburg -> Crossroads -> Al-Zahra Oasis
+        addCurvedRoad({-70.0f, -4.0f},{-35.0f, -2.0f}, {0.0f, 0.0f},   true);
+        addCurvedRoad({0.0f, 0.0f},   {36.0f, -2.0f},  {72.0f, -4.0f}, true);
+
+        // Highland Trail: Highguard Keep -> Frostpeak Eyrie -> Whispering Pass -> Dustdevil Outpost
+        addCurvedRoad({0.0f, 78.0f},  {12.0f, 85.0f},  {24.0f, 92.0f}, false);
+        addCurvedRoad({24.0f, 92.0f}, {44.0f, 62.0f},  {64.0f, 32.0f}, false);
+
+        // Peninsula Coastal Road: Lowmillburg -> Westvale Mill -> Stormpool
+        addCurvedRoad({-70.0f, -4.0f},{-68.0f, -7.0f}, {-65.0f, -9.0f}, true);
+        addCurvedRoad({-65.0f, -9.0f},{-58.0f, -16.0f},{-50.0f, -22.0f},false);
+
+        // Peninsula Northern Road: Lowmillburg -> Coldheartfield -> Starfall Abbey
+        addCurvedRoad({-70.0f, -4.0f},{-64.0f, 9.0f},  {-58.0f, 22.0f}, false);
+        addCurvedRoad({-58.0f, 22.0f},{-65.0f, 33.0f}, {-72.0f, 44.0f}, false);
+
+        // Desert Pilgrimage Trails:
+        // Al-Zahra -> Tomb of Sand Kings
+        addCurvedRoad({72.0f, -4.0f}, {79.0f, 11.0f},  {86.0f, 26.0f}, false);
+        // Al-Zahra -> Sunwatch Minaret -> Cracked Arch
+        addCurvedRoad({72.0f, -4.0f}, {63.0f, -13.0f}, {54.0f, -22.0f},false);
+        addCurvedRoad({54.0f, -22.0f},{61.0f, -27.0f}, {68.0f, -32.0f},false);
+
+        // Southern Coastal trail to Corsair's Haven
+        addCurvedRoad({0.0f, -52.0f}, {0.0f, -64.0f},  {0.0f, -76.0f},  false);
+    } else if (preset_ == AtlasPreset::SunscorchedWastes) {
+        // Northern garrison down to Al-Zahra Oasis
+        addCurvedRoad({-6.0f, 32.0f},  {4.0f, 14.0f},    {12.0f, -6.0f},  false);
+        // Al-Zahra Oasis southwest to Sunwatch Minaret
+        addCurvedRoad({12.0f, -6.0f},  {-8.0f, -14.0f},  {-28.0f, -22.0f},false);
+        // Al-Zahra Oasis northeast ascending to Tomb of the Sand Kings
+        addCurvedRoad({12.0f, -6.0f},  {19.0f, 10.0f},   {24.0f, 26.0f},  false);
+        // Desert trade trail past the Cracked Arch
+        addCurvedRoad({-28.0f, -22.0f},{-22.0f, -6.0f},  {-18.0f, 8.0f},  false);
+    } else if (preset_ == AtlasPreset::PerilousPeninsula) {
         // Reference Dotted Crimson Route: Coldheartfield -> Stormpool -> Lowmillburg
         addCurvedRoad({18.0f, 12.0f},  {26.0f, 0.0f},   {32.0f, -12.0f}, false);
         addCurvedRoad({32.0f, -12.0f}, {22.0f, -24.0f}, {6.0f, -34.0f},  false);
@@ -367,7 +717,54 @@ void VoronoiAtlas::generateOverworldGraph() {
     }
 
     // 5. Place Curved Calligraphic Map Banners (Watabou Perilous Shores + Cat Quest region titles)
-    if (preset_ == AtlasPreset::PerilousPeninsula) {
+    if (preset_ == AtlasPreset::ContinentalPangaea) {
+        // Northern Highlands Grand Banner
+        banners_.push_back(CurvedMapBanner{
+            "THE REALM OF SILVERVALE",
+            {-28.0f, 102.0f}, {0.0f, 106.0f}, {28.0f, 102.0f},
+            3.2f, true, false
+        });
+        // Eastern Desert Grand Banner
+        banners_.push_back(CurvedMapBanner{
+            "THE SUNSCORCHED EXPANSE",
+            {52.0f, 46.0f}, {76.0f, 50.0f}, {100.0f, 46.0f},
+            3.0f, true, false
+        });
+        // Western Peninsula Grand Banner
+        banners_.push_back(CurvedMapBanner{
+            "KILDLAND & THE PERILOUS SHORES",
+            {-96.0f, 32.0f}, {-72.0f, 36.0f}, {-48.0f, 32.0f},
+            3.0f, true, false
+        });
+        // Southern Archipelago Grand Banner (isWaterTitle = true)
+        banners_.push_back(CurvedMapBanner{
+            "THE SHATTERED SEA",
+            {-36.0f, -98.0f}, {0.0f, -104.0f}, {36.0f, -98.0f},
+            3.2f, true, true
+        });
+        // Central Imperial Crossroads Banner
+        banners_.push_back(CurvedMapBanner{
+            "THE IMPERIAL CROSSROADS",
+            {-16.0f, -7.0f}, {0.0f, -10.0f}, {16.0f, -7.0f},
+            2.4f, true, false
+        });
+    } else if (preset_ == AtlasPreset::SunscorchedWastes) {
+        banners_.push_back(CurvedMapBanner{
+            "THE SUNSCORCHED EXPANSE",
+            {-28.0f, 44.0f}, {0.0f, 52.0f}, {28.0f, 44.0f},
+            2.6f, true, false
+        });
+        banners_.push_back(CurvedMapBanner{
+            "AL-ZAHRA OASIS",
+            {2.0f, -15.0f}, {12.0f, -17.5f}, {22.0f, -15.0f},
+            1.6f, false, false
+        });
+        banners_.push_back(CurvedMapBanner{
+            "TOMB OF THE SAND KINGS",
+            {14.0f, 34.0f}, {24.0f, 36.5f}, {34.0f, 34.0f},
+            1.5f, false, false
+        });
+    } else if (preset_ == AtlasPreset::PerilousPeninsula) {
         if (seed_ == 1492u) {
             banners_.push_back(CurvedMapBanner{
                 "KILDLAND",
@@ -435,29 +832,155 @@ void VoronoiAtlas::generateOverworldGraph() {
     }
 }
 
+void VoronoiAtlas::clearDungeon() {
+    dungeonRooms_.clear();
+    dungeonCorridors_.clear();
+    dungeonWaterPools_.clear();
+    pois_.clear();
+    banners_.clear();
+}
+
+void VoronoiAtlas::addDungeonRoom(int id, float minX, float minZ, float maxX, float maxZ, std::string_view label, bool hasWaterMoat, bool isBossRoom) {
+    DungeonRoom rm{};
+    rm.id = id;
+    rm.minX = std::min(minX, maxX);
+    rm.maxX = std::max(minX, maxX);
+    rm.minZ = std::min(minZ, maxZ);
+    rm.maxZ = std::max(minZ, maxZ);
+    rm.label = std::string(label);
+    rm.hasWaterMoat = hasWaterMoat;
+    rm.isBossRoom = isBossRoom;
+    dungeonRooms_.push_back(rm);
+}
+
+void VoronoiAtlas::addDungeonCorridor(float x1, float z1, float x2, float z2, float width) {
+    DungeonCorridor c{};
+    c.p0 = {x1, z1};
+    c.p1 = {x2, z2};
+    c.halfWidth = std::max(0.8f, width * 0.5f);
+    dungeonCorridors_.push_back(c);
+}
+
+void VoronoiAtlas::addDungeonWaterPool(float minX, float minZ, float maxX, float maxZ) {
+    DungeonWaterPool wp{};
+    wp.minX = std::min(minX, maxX);
+    wp.maxX = std::max(minX, maxX);
+    wp.minZ = std::min(minZ, maxZ);
+    wp.maxZ = std::max(minZ, maxZ);
+    dungeonWaterPools_.push_back(wp);
+}
+
+void VoronoiAtlas::generateWatabouProcedural(uint32_t seed, DungeonTheme theme) {
+    clearDungeon();
+    preset_ = AtlasPreset::OnePageDungeon;
+    seed_ = seed;
+
+    if (theme == DungeonTheme::Auto) {
+        uint32_t thChoice = ((seed >> 4) ^ (seed >> 12)) % 4;
+        theme = static_cast<DungeonTheme>(thChoice + 1);
+    }
+    dungeonTheme_ = theme;
+
+    uint32_t s0 = hashU32(seed ^ 0xA5A5A5A5u);
+    int topology = (s0 >> 6) % 3; // 0 = Symmetrical Cross, 1 = Linear Gauntlet, 2 = Cloister Loop
+
+    if (topology == 0) {
+        // Topology 0: Symmetrical Cross (Classic Watabou One-Page Dungeon)
+        float entW = 8.0f + static_cast<float>(s0 & 3u);
+        addDungeonRoom(0, -entW, -36.0f, entW, -24.0f, "I. ATRIUM OF ASCENT", false, false);
+        pois_.push_back(ChartPoi{PoiCategory::DungeonPortal, {0.0f, -32.0f}, 0.25f, "OVERWORLD EXIT", "Ascend to Surface", 1, 1});
+
+        addDungeonCorridor(0.0f, -24.0f, 0.0f, -14.0f, 3.4f);
+
+        float naveW = 12.0f + static_cast<float>((s0 >> 2) & 3u) * 1.5f;
+        addDungeonRoom(1, -naveW, -14.0f, naveW, 12.0f, "II. THE PILLARED NAVE", false, false);
+
+        addDungeonCorridor(-naveW, -1.0f, -naveW - 10.0f, -1.0f, 3.2f);
+        float westMinX = -naveW - 28.0f;
+        float westMaxX = -naveW - 10.0f;
+        bool westPool = (theme == DungeonTheme::SunkenSanctum || theme == DungeonTheme::MoltenVault);
+        addDungeonRoom(2, westMinX, -14.0f, westMaxX, 10.0f,
+                       westPool ? (theme == DungeonTheme::MoltenVault ? "III. CRUCIBLE OF EMBERS" : "III. DROWNED VAULT") : "III. WEST SEPULCHRE",
+                       westPool, false);
+        if (westPool) {
+            addDungeonWaterPool(westMinX + 3.0f, -11.0f, westMaxX - 3.0f, 7.0f);
+        }
+        pois_.push_back(ChartPoi{PoiCategory::StandingStones, {(westMinX + westMaxX) * 0.5f, -1.0f}, 0.25f,
+                                 westPool ? "SACRED BASIN" : "ANCIENT SARCOPHAGUS", "Chamber Feature", 2, 2});
+
+        addDungeonCorridor(naveW, -1.0f, naveW + 10.0f, -1.0f, 3.2f);
+        float eastMinX = naveW + 10.0f;
+        float eastMaxX = naveW + 28.0f;
+        addDungeonRoom(3, eastMinX, -14.0f, eastMaxX, 10.0f,
+                       (theme == DungeonTheme::GildedReliquary) ? "IV. GRAND RELIQUARY" : "IV. ANCIENT TREASURY", false, false);
+        pois_.push_back(ChartPoi{PoiCategory::SunkenRuin, {(eastMinX + eastMaxX) * 0.5f, -1.0f}, 0.25f, "TRANSMUTATION FONT", "Gilded Chest & Relics", 3, 3});
+
+        addDungeonCorridor(0.0f, 12.0f, 0.0f, 20.0f, 3.4f);
+        addDungeonRoom(4, -10.0f, 20.0f, 10.0f, 34.0f, "V. HALL OF OSSUARIES", false, false);
+
+        addDungeonCorridor(0.0f, 34.0f, 0.0f, 42.0f, 4.0f);
+        addDungeonRoom(5, -26.0f, 42.0f, 26.0f, 86.0f, "VI. GRAND SANCTUM", false, true);
+        pois_.push_back(ChartPoi{PoiCategory::BossLair, {0.0f, 60.0f}, 0.25f,
+                                 (theme == DungeonTheme::SunkenSanctum) ? "THE SUNKEN WYRM" :
+                                 (theme == DungeonTheme::MoltenVault) ? "IGNIS DRAKE" :
+                                 (theme == DungeonTheme::WhisperingCrypt) ? "CRYPT REVENANT" : "TITAN SENTINEL",
+                                 "Chamber Guardian", 4, 6});
+    } else if (topology == 1) {
+        // Topology 1: Linear Gauntlet (The Deep Descent)
+        addDungeonRoom(0, -9.0f, -40.0f, 9.0f, -28.0f, "I. ATRIUM OF ASCENT", false, false);
+        pois_.push_back(ChartPoi{PoiCategory::DungeonPortal, {0.0f, -34.0f}, 0.25f, "OVERWORLD EXIT", "Ascend to Surface", 1, 1});
+
+        addDungeonCorridor(0.0f, -28.0f, 0.0f, -18.0f, 3.4f);
+        addDungeonRoom(1, -14.0f, -18.0f, 14.0f, -2.0f, "II. MARTIAL VESTIBULE", false, false);
+
+        addDungeonCorridor(0.0f, -2.0f, 0.0f, 8.0f, 3.6f);
+        bool hasPool = (theme == DungeonTheme::SunkenSanctum || theme == DungeonTheme::MoltenVault);
+        addDungeonRoom(2, -20.0f, 8.0f, 20.0f, 32.0f, hasPool ? "III. SUNKEN ROTUNDA" : "III. HALL OF PILLARS", hasPool, false);
+        if (hasPool) {
+            addDungeonWaterPool(-12.0f, 14.0f, 12.0f, 26.0f);
+        }
+        pois_.push_back(ChartPoi{PoiCategory::StandingStones, {0.0f, 20.0f}, 0.25f, "ROTUNDA DAIS", "Central Chamber", 2, 3});
+
+        addDungeonCorridor(0.0f, 32.0f, 0.0f, 42.0f, 3.6f);
+        addDungeonRoom(3, -12.0f, 42.0f, 12.0f, 54.0f, "IV. THE THRESHOLD", false, false);
+
+        addDungeonCorridor(0.0f, 54.0f, 0.0f, 62.0f, 4.0f);
+        addDungeonRoom(4, -26.0f, 62.0f, 26.0f, 96.0f, "V. ARCH-SANCTUM", false, true);
+        pois_.push_back(ChartPoi{PoiCategory::BossLair, {0.0f, 78.0f}, 0.25f,
+                                 (theme == DungeonTheme::SunkenSanctum) ? "THE SUNKEN WYRM" :
+                                 (theme == DungeonTheme::MoltenVault) ? "IGNIS DRAKE" :
+                                 (theme == DungeonTheme::WhisperingCrypt) ? "CRYPT REVENANT" : "TITAN SENTINEL",
+                                 "Chamber Guardian", 4, 6});
+    } else {
+        // Topology 2: Cloister Loop (The Ring Crypt)
+        addDungeonRoom(0, -12.0f, -36.0f, 12.0f, -22.0f, "I. ATRIUM OF ASCENT", false, false);
+        pois_.push_back(ChartPoi{PoiCategory::DungeonPortal, {0.0f, -30.0f}, 0.25f, "OVERWORLD EXIT", "Ascend to Surface", 1, 1});
+
+        addDungeonCorridor(-8.0f, -22.0f, -24.0f, -12.0f, 3.2f);
+        addDungeonCorridor(8.0f, -22.0f, 24.0f, -12.0f, 3.2f);
+
+        bool westPool = (theme == DungeonTheme::SunkenSanctum || theme == DungeonTheme::MoltenVault);
+        addDungeonRoom(1, -38.0f, -12.0f, -16.0f, 22.0f, westPool ? "II. FLOODED CLOISTER" : "II. WEST AMBULATORY", westPool, false);
+        if (westPool) {
+            addDungeonWaterPool(-35.0f, -7.0f, -19.0f, 17.0f);
+        }
+
+        addDungeonRoom(2, 16.0f, -12.0f, 38.0f, 22.0f, "III. EAST VAULT GALLERY", false, false);
+
+        addDungeonCorridor(-24.0f, 22.0f, -10.0f, 34.0f, 3.4f);
+        addDungeonCorridor(24.0f, 22.0f, 10.0f, 34.0f, 3.4f);
+
+        addDungeonRoom(3, -26.0f, 34.0f, 26.0f, 82.0f, "IV. APEX SANCTUM", false, true);
+        pois_.push_back(ChartPoi{PoiCategory::BossLair, {0.0f, 56.0f}, 0.25f,
+                                 (theme == DungeonTheme::SunkenSanctum) ? "THE SUNKEN WYRM" :
+                                 (theme == DungeonTheme::MoltenVault) ? "IGNIS DRAKE" :
+                                 (theme == DungeonTheme::WhisperingCrypt) ? "CRYPT REVENANT" : "TITAN SENTINEL",
+                                 "Chamber Guardian", 4, 6});
+    }
+}
+
 void VoronoiAtlas::generateOnePageDungeonLayout() {
-    // Watabou One-Page Dungeon Generator:
-    // Symmetrical/interconnected stone chambers carved out of a cross-hatched rock canvas
-    dungeonRooms_ = {
-        {0, -10.0f, -32.0f,  10.0f, -16.0f, "ENTRANCE ROTUNDA",   false, false},
-        {1,  -4.0f, -16.0f,   4.0f,  -4.0f, "HALL OF ECHOES",     false, false},
-        {2, -18.0f,  -4.0f,  18.0f,  16.0f, "PILLARED GREAT HALL",true,  false},
-        {3, -34.0f,   0.0f, -18.0f,  14.0f, "DROWNED CRYPT",      true,  false},
-        {4,  18.0f,   0.0f,  34.0f,  14.0f, "ALCHEMIST VAULT",    false, false},
-        {5,  -4.0f,  16.0f,   4.0f,  26.0f, "SANCTUM STAIR",      false, false},
-        {6, -16.0f,  26.0f,  16.0f,  46.0f, "ELDER WYVERN ALTAR", false, true }
-    };
-
-    pois_.push_back(ChartPoi{PoiCategory::DungeonPortal,  {  0.0f, -26.0f}, 0.2f, "OVERWORLD EXIT",     "Ascend to Perilous Shores", 1, 1});
-    pois_.push_back(ChartPoi{PoiCategory::StandingStones, {-26.0f,   7.0f}, 0.2f, "RUNE OF TIDES",      "Ancient Water Seal",        2, 3});
-    pois_.push_back(ChartPoi{PoiCategory::SunkenRuin,     { 26.0f,   7.0f}, 0.2f, "TRANSMUTATION FONT", "Gilded Chest & Relics",     3, 4});
-    pois_.push_back(ChartPoi{PoiCategory::BossLair,       {  0.0f,  36.0f}, 0.2f, "THE SUNKEN WYRM",    "Lv. 6 Sanctum Guardian",    4, 6});
-
-    banners_.push_back(CurvedMapBanner{
-        "THE SUNKEN SANCTUM",
-        {-24.0f, -38.0f}, {0.0f, -42.0f}, {24.0f, -38.0f},
-        2.3f, true, false
-    });
+    generateWatabouProcedural(seed_, dungeonTheme_);
 }
 
 void VoronoiAtlas::ensureRegionBlocks(float centerWorldX, float centerWorldZ, float radius) {
@@ -618,6 +1141,12 @@ ChartFieldSample VoronoiAtlas::sampleAtKnown(
     float gradX, float gradZ,
     float hOff, float mOff
 ) const noexcept {
+    if (preset_ == AtlasPreset::OnePageDungeon) {
+        return sampleAt(worldX, worldZ);
+    }
+
+    (void)hOff;
+    (void)mOff;
     ChartFieldSample s{};
     s.gradX = gradX;
     s.gradZ = gradZ;
@@ -733,12 +1262,84 @@ ChartFieldSample VoronoiAtlas::sampleAtKnown(
         s.elevation = std::max(s.elevation, 0.45f);
     }
 
-    // 4. Biome classification & watercolor edge-darkening blend
+    // 4. Continuous Biome classification & smooth watercolor transition blending
     uint32_t cellSeed = hashU32(static_cast<uint32_t>(std::floor(worldX * 0.1f)) * 73u +
                                 static_cast<uint32_t>(std::floor(worldZ * 0.1f)) * 199u + seed_);
-    s.biomePrimary = classifyBiome(hC, mC, std::abs(s.sdfCoast), cellSeed);
-    s.biomeSecondary = classifyBiome(hOff, mOff, std::abs(s.sdfCoast), cellSeed);
-    s.biomeBlend = (s.biomePrimary != s.biomeSecondary) ? 0.85f : 0.15f;
+    float coastDist = std::abs(s.sdfCoast);
+
+    if (hC <= 0.0f) {
+        // Underwater: Ocean Deep to Coastal Shoals
+        s.biomePrimary = (hC <= -2.2f) ? BiomeId::OceanDeep : BiomeId::CoastalShoals;
+        s.biomeSecondary = (s.sdfCoast > -3.5f) ? BiomeId::SandyBeach : BiomeId::OceanDeep;
+        s.biomeBlend = (s.sdfCoast > -3.5f) ? std::clamp((s.sdfCoast + 3.5f) / 3.5f, 0.0f, 1.0f) : 0.0f;
+    } else {
+        // Landmass: Evaluate inland base biome
+        BiomeId inlandBiome = BiomeId::LushMeadow;
+        BiomeId inlandSecondary = BiomeId::LushMeadow;
+        float inlandBlend = 0.0f;
+
+        if (hC > 7.2f) {
+            inlandBiome = BiomeId::AlpinePeak;
+            inlandSecondary = (mC > 0.42f) ? BiomeId::TaigaPines : BiomeId::BadlandsCanyon;
+            inlandBlend = std::clamp((7.6f - hC) / 0.8f, 0.0f, 1.0f);
+        } else if (hC > 4.2f) {
+            if (mC > 0.42f) {
+                inlandBiome = BiomeId::TaigaPines;
+                inlandSecondary = (hC > 6.4f) ? BiomeId::AlpinePeak : BiomeId::DeciduousWoodland;
+                inlandBlend = (hC > 6.4f) ? std::clamp((hC - 6.4f) / 0.8f, 0.0f, 1.0f) : std::clamp((4.6f - hC) / 0.8f, 0.0f, 1.0f);
+            } else {
+                inlandBiome = BiomeId::BadlandsCanyon;
+                inlandSecondary = (hC > 6.4f) ? BiomeId::AlpinePeak : BiomeId::AridSteppe;
+                inlandBlend = (hC > 6.4f) ? std::clamp((hC - 6.4f) / 0.8f, 0.0f, 1.0f) : std::clamp((4.6f - hC) / 0.8f, 0.0f, 1.0f);
+            }
+        } else {
+            // Lowlands / Rolling Hills
+            if (mC > 0.68f) {
+                inlandBiome = BiomeId::DeciduousWoodland;
+                inlandSecondary = BiomeId::LushMeadow;
+                inlandBlend = std::clamp((0.74f - mC) / 0.12f, 0.0f, 1.0f);
+            } else if (mC > 0.35f) {
+                inlandBiome = BiomeId::LushMeadow;
+                if (mC > 0.58f) {
+                    inlandSecondary = BiomeId::DeciduousWoodland;
+                    inlandBlend = std::clamp((mC - 0.58f) / 0.10f, 0.0f, 1.0f);
+                } else if (mC < 0.42f) {
+                    inlandSecondary = BiomeId::AridSteppe;
+                    inlandBlend = std::clamp((0.42f - mC) / 0.10f, 0.0f, 1.0f);
+                } else {
+                    inlandSecondary = BiomeId::LushMeadow;
+                    inlandBlend = 0.0f;
+                }
+            } else {
+                inlandBiome = BiomeId::AridSteppe;
+                inlandSecondary = BiomeId::LushMeadow;
+                inlandBlend = std::clamp((mC - 0.28f) / 0.10f, 0.0f, 1.0f);
+            }
+        }
+
+        // Calamity Blight pockets
+        if ((cellSeed & 31u) == 0u && hC > 2.2f && mC < 0.35f) {
+            inlandBiome = BiomeId::CalamityBlight;
+        }
+
+        // Coastal Transition: Smooth blend from SandyBeach/SaltMarsh into the inland biome
+        if (coastDist < 4.2f && hC < 1.8f) {
+            BiomeId coastBiome = (mC > 0.66f) ? BiomeId::SaltMarsh : BiomeId::SandyBeach;
+            if (coastDist < 1.8f) {
+                s.biomePrimary = coastBiome;
+                s.biomeSecondary = inlandBiome;
+                s.biomeBlend = std::clamp((coastDist - 0.8f) / 1.0f * 0.25f, 0.0f, 0.25f);
+            } else {
+                s.biomePrimary = coastBiome;
+                s.biomeSecondary = inlandBiome;
+                s.biomeBlend = std::clamp((coastDist - 1.8f) / 2.4f, 0.0f, 1.0f);
+            }
+        } else {
+            s.biomePrimary = inlandBiome;
+            s.biomeSecondary = inlandSecondary;
+            s.biomeBlend = inlandBlend;
+        }
+    }
 
     return s;
 }
@@ -766,26 +1367,72 @@ ChartFieldSample VoronoiAtlas::sampleAt(float worldX, float worldZ) const noexce
             }
         }
 
+        for (const auto& corr : dungeonCorridors_) {
+            float vx = corr.p1.x - corr.p0.x;
+            float vz = corr.p1.y - corr.p0.y;
+            float lenSq = vx * vx + vz * vz;
+            float t = 0.0f;
+            if (lenSq > 1e-4f) {
+                t = std::clamp(((worldX - corr.p0.x) * vx + (worldZ - corr.p0.y) * vz) / lenSq, 0.0f, 1.0f);
+            }
+            float px = corr.p0.x + t * vx;
+            float pz = corr.p0.y + t * vz;
+            float distToCenter = std::sqrt((worldX - px) * (worldX - px) + (worldZ - pz) * (worldZ - pz));
+            float d = distToCenter - corr.halfWidth;
+            if (d < minSignedDist) {
+                minSignedDist = d;
+            }
+        }
+
+        float minWaterDist = 100.0f;
+        for (const auto& wp : dungeonWaterPools_) {
+            float cx = 0.5f * (wp.minX + wp.maxX);
+            float cz = 0.5f * (wp.minZ + wp.maxZ);
+            float hx = 0.5f * (wp.maxX - wp.minX);
+            float hz = 0.5f * (wp.maxZ - wp.minZ);
+            float dx = std::abs(worldX - cx) - hx;
+            float dz = std::abs(worldZ - cz) - hz;
+            float outsideDist = std::sqrt(std::max(dx, 0.0f) * std::max(dx, 0.0f) +
+                                          std::max(dz, 0.0f) * std::max(dz, 0.0f));
+            float insideDist = std::min(std::max(dx, dz), 0.0f);
+            float d = outsideDist + insideDist;
+            if (d < minWaterDist) {
+                minWaterDist = d;
+            }
+        }
+        bool inWater = (minWaterDist <= 0.0f);
+
         s.flags = ChartFlags::IsDungeonMode;
+        // 2.5D Elevation Profile: Smooth analytical Hermite S-curve for raised walls and sunken pool basin
+        float elev = 0.25f;
+        if (minSignedDist > 0.0f) {
+            // Walls: rise smoothly from floor (0.25m) to wall parapet (1.65m) across 1.4m transition
+            float t = std::clamp(minSignedDist / 1.4f, 0.0f, 1.0f);
+            float sCurve = t * t * (3.0f - 2.0f * t);
+            elev = 0.25f + 1.40f * sCurve;
+        } else if (inWater) {
+            // Sunken Water Pool: dips smoothly down to -0.20m across 0.8m basin
+            float t = std::clamp(-minWaterDist / 0.8f, 0.0f, 1.0f);
+            float sCurve = t * t * (3.0f - 2.0f * t);
+            elev = 0.25f - 0.45f * sCurve;
+        }
+        s.elevation = elev;
+        s.sdfRiver  = minWaterDist; // Vector signed distance to water pool (< 0 inside pool, > 0 outside)
+
         if (minSignedDist <= 0.0f) {
-            // Inside carved flagstone room
-            s.elevation = 0.25f;
+            // Inside carved flagstone room or corridor
             s.sdfCoast  = -minSignedDist;
             s.biomePrimary   = BiomeId::DungeonFlagstone;
             s.biomeSecondary = BiomeId::DungeonFlagstone;
-            if (inMoatRoom && std::abs(worldX) > 5.5f && std::abs(worldX) < 12.5f &&
-                worldZ > 1.5f && worldZ < 10.5f) {
-                s.elevation = -0.35f;
-                s.sdfCoast  = -1.5f;
+            if (inWater) {
                 s.flags |= ChartFlags::IsWater;
                 s.biomePrimary = BiomeId::CoastalShoals;
             }
         } else {
-            s.elevation = 1.45f;
+            // Solid cross-hatched subterranean rock perimeter
             s.sdfCoast  = -minSignedDist;
             s.biomePrimary   = BiomeId::DungeonHatchedWall;
             s.biomeSecondary = BiomeId::DungeonFlagstone;
-            s.biomeBlend     = std::exp(-minSignedDist * 0.45f);
         }
         return s;
     }

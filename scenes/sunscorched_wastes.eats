@@ -1,0 +1,8 @@
+# Eatscharted Scene Recipe: The Sunscorched Wastes
+# Generates windblown sand dunes, terraced sandstone mesas, a sunken palm oasis,
+# ancient tomb portals, and nomad caravan trails across an arid parchment expanse.
+
+chart.clear()
+chart.build_sunscorched_wastes(seed=1066)
+chart.set_hero_pos(x=12.0, z=-6.0)
+

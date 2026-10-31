@@ -1,0 +1,12 @@
+# Eatscharted Master Scene: Continental Pangaea (Unified Seamless Overland Map)
+# Unites four distinct biomes into a single continuous living world:
+# - North: The Highland Kingdom (Silvervale Alpine Peaks, Glacial River Valley & Highguard Keep)
+# - West: The Perilous Peninsula (Kildland Rolling Meadows, Windmills & Lowmillburg Castle)
+# - East: The Sunscorched Wastes (Windblown Sand Dunes, Sandstone Mesas & Al-Zahra Oasis)
+# - South: The Shattered Archipelago (The Shattered Sea, Corsair Atolls & Navigable Waters)
+# - Center: The Imperial Crossroads (Heart of Pangaea connecting all royal highways)
+
+chart.clear()
+chart.build_continental_overworld(seed=2026)
+chart.set_hero_pos(x=0.0, z=0.0)
+

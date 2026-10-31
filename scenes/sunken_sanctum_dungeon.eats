@@ -1,6 +1,79 @@
 # Eatscharted Scene Recipe: The Sunken Sanctum (Watabou One-Page Dungeon Mode)
 # Cross-hatched subterranean stone perimeter, 2m flagstone grid, flooded crypt moat, and Wyvern Boss.
 
-chart.clear()
-chart.build_one_page_dungeon(seed=999)
-chart.set_hero_pos(x=0.0, z=-22.0)
+dungeon.init(seed=999, title="THE SUNKEN SANCTUM", subtitle="Watabou One-Page Dungeon")
+
+# 1. Entrance Crypt & Surface Portal
+dungeon.add_room(min_x=-10.0, min_z=-38.0, max_x=10.0, max_z=-24.0, label="I. ATRIUM OF ASCENT")
+dungeon.add_exit_portal(x=0.0, z=-34.0)
+dungeon.add_torch(x=-8.0, z=-36.0, r=1.0, g=0.72, b=0.36, radius=14.0, intensity=1.35)
+dungeon.add_torch(x=8.0, z=-36.0, r=1.0, g=0.72, b=0.36, radius=14.0, intensity=1.35)
+dungeon.add_torch(x=-8.0, z=-26.0, r=1.0, g=0.72, b=0.36, radius=14.0, intensity=1.35)
+dungeon.add_torch(x=8.0, z=-26.0, r=1.0, g=0.72, b=0.36, radius=14.0, intensity=1.35)
+
+# Corridor: Atrium -> Pillared Nave
+dungeon.add_corridor(x1=0.0, z1=-24.0, x2=0.0, z2=-14.0, width=3.4)
+
+# 2. The Pillared Nave (Grand Hall with Twin Colonnades)
+dungeon.add_room(min_x=-14.0, min_z=-14.0, max_x=14.0, max_z=12.0, label="II. THE PILLARED NAVE")
+dungeon.add_pillar_row(x1=-8.0, z1=-10.0, x2=-8.0, z2=8.0, count=5)
+dungeon.add_pillar_row(x1=8.0, z1=-10.0, x2=8.0, z2=8.0, count=5)
+dungeon.add_torch(x=-12.0, z=-1.0, r=1.0, g=0.75, b=0.40, radius=15.0, intensity=1.4)
+dungeon.add_torch(x=12.0, z=-1.0, r=1.0, g=0.75, b=0.40, radius=15.0, intensity=1.4)
+dungeon.add_enemy(x=-3.0, z=-2.0, type="bandit", name="Crypt Marauder", hp=65)
+dungeon.add_enemy(x=3.0, z=4.0, type="bandit", name="Crypt Sentinel", hp=65)
+
+# West Corridor: Nave -> Drowned Vault
+dungeon.add_corridor(x1=-14.0, z1=-1.0, x2=-24.0, z2=-1.0, width=3.2)
+
+# 3. Drowned Vault (Flooded Subterranean Cistern)
+dungeon.add_room(min_x=-42.0, min_z=-14.0, max_x=-24.0, max_z=10.0, label="III. DROWNED VAULT", water=true)
+dungeon.add_water_pool(min_x=-39.0, min_z=-11.0, max_x=-27.0, max_z=7.0)
+dungeon.add_torch(x=-26.0, z=8.0, r=0.35, g=0.75, b=1.0, radius=16.0, intensity=1.5)
+dungeon.add_torch(x=-40.0, z=-10.0, r=0.35, g=0.75, b=1.0, radius=16.0, intensity=1.5)
+dungeon.add_chest(x=-40.0, z=8.0)
+dungeon.add_enemy(x=-33.0, z=-1.0, type="slime", name="Abyssal Slime", hp=45)
+
+# East Corridor: Nave -> Alchemical Reliquary
+dungeon.add_corridor(x1=14.0, z1=-1.0, x2=24.0, z2=-1.0, width=3.2)
+
+# 4. Alchemical Reliquary
+dungeon.add_room(min_x=24.0, min_z=-14.0, max_x=42.0, max_z=10.0, label="IV. ALCHEMICAL RELIQUARY")
+dungeon.add_torch(x=26.0, z=-10.0, r=1.0, g=0.85, b=0.38, radius=15.0, intensity=1.4)
+dungeon.add_torch(x=40.0, z=8.0, r=1.0, g=0.85, b=0.38, radius=15.0, intensity=1.4)
+dungeon.add_pillar(x=33.0, z=-1.0)
+dungeon.add_chest(x=39.0, z=-9.0)
+dungeon.add_chest(x=39.0, z=-4.0)
+dungeon.add_enemy(x=33.0, z=4.0, type="bandit", name="Vault Marauder", hp=60)
+
+# North Corridor: Nave -> Hall of Ossuaries
+dungeon.add_corridor(x1=0.0, z1=12.0, x2=0.0, z2=20.0, width=3.4)
+
+# 5. Hall of Whispering Ossuaries
+dungeon.add_room(min_x=-10.0, min_z=20.0, max_x=10.0, max_z=34.0, label="V. HALL OF OSSUARIES")
+dungeon.add_pillar(x=-6.0, z=27.0)
+dungeon.add_pillar(x=6.0, z=27.0)
+dungeon.add_torch(x=-8.0, z=22.0, r=1.0, g=0.72, b=0.36, radius=14.0, intensity=1.35)
+dungeon.add_torch(x=8.0, z=22.0, r=1.0, g=0.72, b=0.36, radius=14.0, intensity=1.35)
+dungeon.add_enemy(x=0.0, z=27.0, type="slime", name="Spectral Ooze", hp=50)
+
+# North Grand Corridor: Ossuaries -> Boss Sanctum
+dungeon.add_corridor(x1=0.0, z1=34.0, x2=0.0, z2=42.0, width=4.0)
+
+# 6. Sanctum of the Sunken Wyrm
+dungeon.add_room(min_x=-26.0, min_z=42.0, max_x=26.0, max_z=86.0, label="VI. WYRM SANCTUM", boss=true)
+dungeon.add_pillar_row(x1=-18.0, z1=46.0, x2=-18.0, z2=78.0, count=5)
+dungeon.add_pillar_row(x1=18.0, z1=46.0, x2=18.0, z2=78.0, count=5)
+dungeon.add_torch(x=-20.0, z=44.0, r=1.0, g=0.55, b=0.20, radius=18.0, intensity=1.75)
+dungeon.add_torch(x=20.0, z=44.0, r=1.0, g=0.55, b=0.20, radius=18.0, intensity=1.75)
+dungeon.add_torch(x=-20.0, z=64.0, r=1.0, g=0.55, b=0.20, radius=18.0, intensity=1.75)
+dungeon.add_torch(x=20.0, z=64.0, r=1.0, g=0.55, b=0.20, radius=18.0, intensity=1.75)
+dungeon.add_torch(x=-20.0, z=82.0, r=1.0, g=0.55, b=0.20, radius=18.0, intensity=1.75)
+dungeon.add_torch(x=20.0, z=82.0, r=1.0, g=0.55, b=0.20, radius=18.0, intensity=1.75)
+dungeon.add_chest(x=-12.0, z=78.0)
+dungeon.add_chest(x=12.0, z=78.0)
+dungeon.add_exit_portal(x=0.0, z=82.0)
+dungeon.add_enemy(x=0.0, z=60.0, type="wyvern", name="The Sunken Wyrm", hp=220, boss=true)
+
+# 7. Hero Position
+chart.set_hero_pos(x=0.0, z=-28.0)

@@ -37,6 +37,7 @@ ChartWorld::ChartWorld() {
 }
 
 void ChartWorld::clear() {
+    dungeonExplicitDressing_ = false;
     chunkCache_.clear();
     activeChunkX_ = -999999;
     activeChunkZ_ = -999999;
@@ -51,8 +52,20 @@ void ChartWorld::clear() {
     customBanners_.clear();
     enemies_.clear();
     floatingNumbers_.clear();
+    localeBanner_.active = false;
+    lastDiscoveredLocale_.clear();
     mapSurfaceTriCount_ = 0;
     bannerGlyphTriCount_ = 0;
+}
+
+void ChartWorld::triggerLocaleDiscovery(std::string_view name, std::string_view subtitle) {
+    if (name.empty()) return;
+    localeBanner_.title = std::string(name);
+    localeBanner_.subtitle = std::string(subtitle);
+    localeBanner_.timer = 0.0f;
+    localeBanner_.duration = 2.8f;
+    localeBanner_.active = true;
+    lastDiscoveredLocale_ = localeBanner_.title;
 }
 
 void ChartWorld::buildPerilousPeninsula(uint32_t seed) {
@@ -62,6 +75,7 @@ void ChartWorld::buildPerilousPeninsula(uint32_t seed) {
     hero_.pos = {6.0f, 0.45f, -30.0f};
     hero_.activeRegionName = "LOWMILLBURG";
     hero_.activeRegionSub  = "Kildland Realm";
+    triggerLocaleDiscovery(hero_.activeRegionName, hero_.activeRegionSub);
     camera_.target   = {hero_.pos.x, hero_.pos.y, hero_.pos.z};
     camera_.position = {hero_.pos.x, 28.0f, hero_.pos.z - 25.0f};
 }
@@ -73,6 +87,7 @@ void ChartWorld::buildShatteredArchipelago(uint32_t seed) {
     hero_.pos = {0.0f, 0.45f, -4.0f};
     hero_.activeRegionName = "CORSAIR'S HAVEN";
     hero_.activeRegionSub  = "The Shattered Sea";
+    triggerLocaleDiscovery(hero_.activeRegionName, hero_.activeRegionSub);
     camera_.target   = {hero_.pos.x, hero_.pos.y, hero_.pos.z};
     camera_.position = {hero_.pos.x, 30.0f, hero_.pos.z - 26.0f};
 }
@@ -84,23 +99,180 @@ void ChartWorld::buildHighlandKingdom(uint32_t seed) {
     hero_.pos = {0.0f, 0.65f, 4.0f};
     hero_.activeRegionName = "HIGHGUARD KEEP";
     hero_.activeRegionSub  = "Silvervale Realm";
+    triggerLocaleDiscovery(hero_.activeRegionName, hero_.activeRegionSub);
     camera_.target   = {hero_.pos.x, hero_.pos.y, hero_.pos.z};
     camera_.position = {hero_.pos.x, 28.0f, hero_.pos.z - 25.0f};
 }
 
-void ChartWorld::buildOnePageDungeon(uint32_t seed) {
-    generateCustomChart(seed, AtlasPreset::OnePageDungeon);
-    hero_.pos = {0.0f, 0.28f, -22.0f};
+void ChartWorld::buildSunscorchedWastes(uint32_t seed) {
+    overworldReturnSeed_ = seed;
+    overworldReturnPreset_ = AtlasPreset::SunscorchedWastes;
+    generateCustomChart(seed, AtlasPreset::SunscorchedWastes);
+    hero_.pos = {12.0f, 0.45f, -6.0f};
     hero_.isSailing = false;
-    hero_.activeRegionName = "THE SUNKEN SANCTUM";
-    hero_.activeRegionSub  = "Watabou One-Page Dungeon";
+    hero_.activeRegionName = "AL-ZAHRA OASIS";
+    hero_.activeRegionSub  = "The Sunscorched Expanse";
+    triggerLocaleDiscovery(hero_.activeRegionName, hero_.activeRegionSub);
     camera_.target   = {hero_.pos.x, hero_.pos.y, hero_.pos.z};
-    camera_.position = {hero_.pos.x, 25.0f, hero_.pos.z - 21.0f};
+    camera_.position = {hero_.pos.x, 28.0f, hero_.pos.z - 25.0f};
+}
+
+void ChartWorld::buildContinentalPangaea(uint32_t seed) {
+    overworldReturnSeed_ = seed;
+    overworldReturnPreset_ = AtlasPreset::ContinentalPangaea;
+    generateCustomChart(seed, AtlasPreset::ContinentalPangaea);
+    hero_.pos = {0.0f, 1.75f, 0.0f};
+    hero_.isSailing = false;
+    hero_.activeRegionName = "THE IMPERIAL CROSSROADS";
+    hero_.activeRegionSub  = "Heart of Pangaea";
+    triggerLocaleDiscovery(hero_.activeRegionName, hero_.activeRegionSub);
+    camera_.target   = {hero_.pos.x, hero_.pos.y, hero_.pos.z};
+    camera_.position = {hero_.pos.x, 28.0f, hero_.pos.z - 25.0f};
+}
+
+void ChartWorld::initDungeon(uint32_t seed, std::string_view title, std::string_view subtitle) {
+    clear();
+    gridCenter_ = {0.0f, 0.0f};
+    voronoi_.setPreset(AtlasPreset::OnePageDungeon);
+    voronoi_.setSeed(seed);
+    voronoi_.clearDungeon();
+    dungeonExplicitDressing_ = true;
+
+    // Subterranean dark torchlit mood: Zero celestial sun by default in dungeons
+    atmosphere_.skyZenith = {0.02f, 0.02f, 0.03f};
+    atmosphere_.skyHorizon = {0.03f, 0.03f, 0.04f};
+    atmosphere_.sunColor = {0.0f, 0.0f, 0.0f}; // Zero celestial sun by default inside subterranean dungeons
+    atmosphere_.sunDirection = {-0.2f, 0.9f, -0.3f};
+    atmosphere_.fogDensity = 0.003f;
+    atmosphere_.exposure = 1.05f;
+    useDayNightCycle_ = false; // Strictly disabled by default in dungeons
+
+    hero_.pos = {0.0f, 0.28f, -28.0f};
+    hero_.isSailing = false;
+    hero_.activeRegionName = std::string(title);
+    hero_.activeRegionSub = std::string(subtitle);
+    triggerLocaleDiscovery(hero_.activeRegionName, hero_.activeRegionSub);
+
+    camera_.target = {hero_.pos.x, hero_.pos.y, hero_.pos.z};
+    camera_.position = {hero_.pos.x, 26.0f, hero_.pos.z - 22.0f};
+    camera_.fovDegrees = 44.0f;
+    camera_.horizonCurve = 0.0f;
+}
+
+void ChartWorld::addDungeonRoom(float minX, float minZ, float maxX, float maxZ, std::string_view label, bool water, bool boss) {
+    int id = static_cast<int>(voronoi_.dungeonRooms().size());
+    voronoi_.addDungeonRoom(id, minX, minZ, maxX, maxZ, label, water, boss);
+    // Note: No floor text is rendered in dungeons; the animated header toast is sufficient.
+}
+
+void ChartWorld::addDungeonCorridor(float x1, float z1, float x2, float z2, float width) {
+    voronoi_.addDungeonCorridor(x1, z1, x2, z2, width);
+}
+
+void ChartWorld::addDungeonWaterPool(float minX, float minZ, float maxX, float maxZ) {
+    voronoi_.addDungeonWaterPool(minX, minZ, maxX, maxZ);
+}
+
+void ChartWorld::addDungeonTorch(Vec3f pos, Vec3f color, float radius, float intensity) {
+    addCustomStandee(pos, 1.4f, 1.5f, InkLayer::StandeeCampfire, StandeeFlags::Emissive | StandeeFlags::IdleBob);
+    addPointLight({pos.x, pos.y + 1.8f, pos.z}, radius, color, intensity);
+}
+
+void ChartWorld::addDungeonPillar(Vec3f pos) {
+    addCustomStandee(pos, 1.6f, 3.2f, InkLayer::StandeeStandingStone, StandeeFlags::PopUpTilt);
+}
+
+void ChartWorld::addDungeonChest(Vec3f pos) {
+    addCustomStandee(pos, 1.8f, 1.6f, InkLayer::StandeeTreasureChest, StandeeFlags::PopUpTilt);
+}
+
+void ChartWorld::addDungeonExitPortal(Vec3f pos) {
+    addCustomStandee(pos, 3.6f, 3.8f, InkLayer::StandeeDungeonArch, StandeeFlags::PopUpTilt | StandeeFlags::Emissive);
+    addPointLight({pos.x, pos.y + 2.0f, pos.z}, 14.0f, {0.6f, 0.85f, 1.0f}, 1.4f);
+}
+
+void ChartWorld::addDungeonEnemy(Vec3f pos, std::string_view name, uint16_t layer, int hp, bool isBoss, float telegraphRadius, uint32_t telegraphType) {
+    EnemyAgent en{};
+    en.pos = pos;
+    en.homePos = pos;
+    en.standeeLayer = layer;
+    en.name = std::string(name);
+    en.width = isBoss ? 4.6f : 2.2f;
+    en.height = isBoss ? 4.6f : 2.2f;
+    en.hp = hp;
+    en.maxHp = hp;
+    en.telegraphRadius = telegraphRadius;
+    en.telegraphType = telegraphType;
+    en.isBoss = isBoss;
+    en.alive = true;
+    enemies_.push_back(en);
+}
+
+void ChartWorld::buildWatabouDungeon(uint32_t seed, DungeonTheme theme) {
+    if (theme == DungeonTheme::Auto) {
+        uint32_t thChoice = ((seed >> 4) ^ (seed >> 12)) % 4;
+        theme = static_cast<DungeonTheme>(thChoice + 1);
+    }
+    std::string_view title = "THE SUNKEN SANCTUM";
+    std::string_view sub = "Flooded Subterranean Cistern";
+    if (theme == DungeonTheme::WhisperingCrypt) {
+        title = "THE WHISPERING CRYPT";
+        sub = "Ancient Ossuary & Tombs";
+    } else if (theme == DungeonTheme::MoltenVault) {
+        title = "THE MOLTEN CRUCIBLE";
+        sub = "Subterranean Magma Vault";
+    } else if (theme == DungeonTheme::GildedReliquary) {
+        title = "THE GILDED RELIQUARY";
+        sub = "Alchemical Treasury & Font";
+    }
+
+    // 1. Initialize dungeon mode (sets preset, baseline atmosphere, clears old world)
+    initDungeon(seed, title, sub);
+
+    // 2. Generate the procedural Watabou layout (rooms, corridors, pools)
+    voronoi_.generateWatabouProcedural(seed, theme);
+
+    // 3. Theme-specific subterranean atmospheric lighting (dark by default, requires torches/lanterns)
+    atmosphere_.sunColor = {0.0f, 0.0f, 0.0f}; // Subterranean dungeons have zero direct celestial sunlight by default
+    useDayNightCycle_ = false;                  // No day/night cycle underground unless explicitly scripted
+
+    if (theme == DungeonTheme::MoltenVault) {
+        atmosphere_.skyZenith = {0.02f, 0.008f, 0.008f};
+        atmosphere_.skyHorizon = {0.035f, 0.012f, 0.01f};
+    } else if (theme == DungeonTheme::WhisperingCrypt) {
+        atmosphere_.skyZenith = {0.01f, 0.01f, 0.015f};
+        atmosphere_.skyHorizon = {0.02f, 0.02f, 0.025f};
+    } else if (theme == DungeonTheme::GildedReliquary) {
+        atmosphere_.skyZenith = {0.015f, 0.012f, 0.01f};
+        atmosphere_.skyHorizon = {0.025f, 0.02f, 0.015f};
+    } else { // SunkenSanctum / default
+        atmosphere_.skyZenith = {0.01f, 0.012f, 0.018f};
+        atmosphere_.skyHorizon = {0.02f, 0.022f, 0.028f};
+    }
+
+    // 4. Set hero pos in entrance room center
+    if (!voronoi_.dungeonRooms().empty()) {
+        const auto& r0 = voronoi_.dungeonRooms()[0];
+        hero_.pos = {(r0.minX + r0.maxX) * 0.5f, 0.28f, (r0.minZ + r0.maxZ) * 0.5f};
+        camera_.target = hero_.pos;
+        camera_.position = {hero_.pos.x, 26.0f, hero_.pos.z - 22.0f};
+    }
+
+    dungeonExplicitDressing_ = false; // allows bakeChunk to auto-dress rooms, torches, and enemies
+}
+
+void ChartWorld::buildProceduralDungeon(uint32_t seed, DungeonTheme theme) {
+    buildWatabouDungeon(seed, theme);
+}
+
+void ChartWorld::buildOnePageDungeon(uint32_t seed, DungeonTheme theme) {
+    buildWatabouDungeon(seed, theme);
 }
 
 void ChartWorld::generateCustomChart(uint32_t seed, AtlasPreset preset) {
     clear();
     gridCenter_ = {0.0f, 0.0f};
+    useDayNightCycle_ = true;
     voronoi_.generate(seed, preset);
 }
 
@@ -182,56 +354,64 @@ MapChunk ChartWorld::bakeChunk(int cx, int cz) {
         for (int lx = 0; lx < kHaloDim; ++lx) {
             float wx = minX + static_cast<float>(lx - 1) * 1.0f;
             size_t idx = static_cast<size_t>(lz) * kHaloDim + lx;
-            haloH[idx] = voronoi_.rawElevation(wx, wz);
-            haloM[idx] = voronoi_.rawMoisture(wx, wz);
+            if (voronoi_.isDungeonMode()) {
+                haloH[idx] = voronoi_.sampleAt(wx, wz).elevation;
+                haloM[idx] = 0.5f;
+            } else {
+                haloH[idx] = voronoi_.rawElevation(wx, wz);
+                haloM[idx] = voronoi_.rawMoisture(wx, wz);
+            }
         }
     }
 
-    constexpr int vertCount1D = kGridN + 1; // 33
-    std::vector<ChartFieldSample> samples(vertCount1D * vertCount1D);
+    std::vector<ChartFieldSample> samples(kHaloDim * kHaloDim);
 
-    for (int gz = 0; gz <= kGridN; ++gz) {
-        float wz = minZ + static_cast<float>(gz) * 1.0f;
-        int lz = gz + 1;
-
-        for (int gx = 0; gx <= kGridN; ++gx) {
-            float wx = minX + static_cast<float>(gx) * 1.0f;
-            int lx = gx + 1;
-
+    for (int lz = 0; lz < kHaloDim; ++lz) {
+        float wz = minZ + static_cast<float>(lz - 1) * 1.0f;
+        for (int lx = 0; lx < kHaloDim; ++lx) {
+            float wx = minX + static_cast<float>(lx - 1) * 1.0f;
             size_t hIdx = static_cast<size_t>(lz) * kHaloDim + lx;
-            float hC = haloH[hIdx];
-            float mC = haloM[hIdx];
+            if (voronoi_.isDungeonMode()) {
+                samples[hIdx] = voronoi_.sampleAt(wx, wz);
+            } else {
+                float hC = haloH[hIdx];
+                float mC = haloM[hIdx];
 
-            float gradX = (haloH[static_cast<size_t>(lz) * kHaloDim + (lx + 1)] -
-                           haloH[static_cast<size_t>(lz) * kHaloDim + (lx - 1)]) * 0.5f;
-            float gradZ = (haloH[static_cast<size_t>(lz + 1) * kHaloDim + lx] -
-                           haloH[static_cast<size_t>(lz - 1) * kHaloDim + lx]) * 0.5f;
+                int lxL = std::max(0, lx - 1);
+                int lxR = std::min(kHaloDim - 1, lx + 1);
+                int lzD = std::max(0, lz - 1);
+                int lzU = std::min(kHaloDim - 1, lz + 1);
 
-            int lxOff = std::min(kHaloDim - 1, lx + 2);
-            int lzOff = std::max(0, lz - 2);
-            size_t offIdx = static_cast<size_t>(lzOff) * kHaloDim + lxOff;
-            float hOff = haloH[offIdx];
-            float mOff = haloM[offIdx];
+                float gradX = (haloH[static_cast<size_t>(lz) * kHaloDim + lxR] -
+                               haloH[static_cast<size_t>(lz) * kHaloDim + lxL]) * 0.5f;
+                float gradZ = (haloH[static_cast<size_t>(lzU) * kHaloDim + lx] -
+                               haloH[static_cast<size_t>(lzD) * kHaloDim + lx]) * 0.5f;
 
-            size_t sIdx = static_cast<size_t>(gz) * vertCount1D + gx;
-            samples[sIdx] = voronoi_.sampleAtKnown(wx, wz, hC, mC, gradX, gradZ, hOff, mOff);
+                int lxOff = std::min(kHaloDim - 1, lx + 2);
+                int lzOff = std::max(0, lz - 2);
+                size_t offIdx = static_cast<size_t>(lzOff) * kHaloDim + lxOff;
+                float hOff = haloH[offIdx];
+                float mOff = haloM[offIdx];
+
+                samples[hIdx] = voronoi_.sampleAtKnown(wx, wz, hC, mC, gradX, gradZ, hOff, mOff);
+            }
         }
     }
 
     auto makeVertex = [&](int gx, int gz) -> ChartVertex {
-        const auto& s = samples[static_cast<size_t>(gz) * vertCount1D + gx];
+        int lx = gx + 1;
+        int lz = gz + 1;
+        const auto& s = samples[static_cast<size_t>(lz) * kHaloDim + lx];
         float wx = minX + static_cast<float>(gx) * 1.0f;
         float wz = minZ + static_cast<float>(gz) * 1.0f;
 
-        // Compute analytical surface normal from adjacent elevation samples for authentic Sorcery! relief shading
-        float eL = samples[static_cast<size_t>(gz) * vertCount1D + std::max(0, gx - 1)].elevation;
-        float eR = samples[static_cast<size_t>(gz) * vertCount1D + std::min(kGridN, gx + 1)].elevation;
-        float eD = samples[static_cast<size_t>(std::max(0, gz - 1)) * vertCount1D + gx].elevation;
-        float eU = samples[static_cast<size_t>(std::min(kGridN, gz + 1)) * vertCount1D + gx].elevation;
-        float stepX = (gx > 0 && gx < kGridN) ? 2.0f : 1.0f;
-        float stepZ = (gz > 0 && gz < kGridN) ? 2.0f : 1.0f;
-        float dHdX = (eR - eL) / stepX;
-        float dHdZ = (eU - eD) / stepZ;
+        // Continuous C1 analytical surface normal across all chunk borders via halo central differences
+        float eL = samples[static_cast<size_t>(lz) * kHaloDim + (lx - 1)].elevation;
+        float eR = samples[static_cast<size_t>(lz) * kHaloDim + (lx + 1)].elevation;
+        float eD = samples[static_cast<size_t>(lz - 1) * kHaloDim + lx].elevation;
+        float eU = samples[static_cast<size_t>(lz + 1) * kHaloDim + lx].elevation;
+        float dHdX = (eR - eL) * 0.5f;
+        float dHdZ = (eU - eD) * 0.5f;
 
         Vec3f norm{-dHdX, 1.0f, -dHdZ};
         float nLen = std::sqrt(norm.x * norm.x + norm.y * norm.y + norm.z * norm.z);
@@ -279,86 +459,87 @@ MapChunk ChartWorld::bakeChunk(int cx, int cz) {
 
     // 2. Standees, Lights & Enemies for this Chunk
     if (voronoi_.isDungeonMode()) {
-        for (const auto& rm : voronoi_.dungeonRooms()) {
-            float cx_rm = 0.5f * (rm.minX + rm.maxX);
-            float cz_rm = 0.5f * (rm.minZ + rm.maxZ);
+        if (!dungeonExplicitDressing_) {
+            for (const auto& rm : voronoi_.dungeonRooms()) {
+                float cx_rm = 0.5f * (rm.minX + rm.maxX);
+                float cz_rm = 0.5f * (rm.minZ + rm.maxZ);
 
-            if (rm.minX + 1.8f >= minX && rm.minX + 1.8f < maxX && rm.minZ + 1.8f >= minZ && rm.minZ + 1.8f < maxZ) {
-                StandeeInstance st{};
-                st.worldPos[0] = rm.minX + 1.8f; st.worldPos[1] = 0.25f; st.worldPos[2] = rm.minZ + 1.8f;
-                st.width = 1.4f; st.height = 1.5f; st.texLayer = InkLayer::StandeeCampfire;
-                st.flags = StandeeFlags::Emissive | StandeeFlags::IdleBob;
-                ch.standees.push_back(st);
-            }
-            if (rm.maxX - 1.8f >= minX && rm.maxX - 1.8f < maxX && rm.minZ + 1.8f >= minZ && rm.minZ + 1.8f < maxZ) {
-                StandeeInstance st{};
-                st.worldPos[0] = rm.maxX - 1.8f; st.worldPos[1] = 0.25f; st.worldPos[2] = rm.minZ + 1.8f;
-                st.width = 1.4f; st.height = 1.5f; st.texLayer = InkLayer::StandeeCampfire;
-                st.flags = StandeeFlags::Emissive | StandeeFlags::IdleBob;
-                ch.standees.push_back(st);
-            }
-            if (cx_rm >= minX && cx_rm < maxX && cz_rm >= minZ && cz_rm < maxZ) {
-                PointLight pl{};
-                pl.position[0] = cx_rm; pl.position[1] = 2.2f; pl.position[2] = cz_rm;
-                pl.radius = 16.0f; pl.color[0] = 1.0f; pl.color[1] = 0.72f; pl.color[2] = 0.36f;
-                pl.intensity = 1.35f;
-                ch.lights.push_back(pl);
-
-                if (rm.isBossRoom) {
-                    bool hasBoss = false;
-                    for (const auto& en : enemies_) if (en.isBoss) { hasBoss = true; break; }
-                    if (!hasBoss) {
-                        EnemyAgent boss{};
-                        boss.pos = {cx_rm, 0.25f, cz_rm + 2.0f};
-                        boss.homePos = boss.pos;
-                        boss.standeeLayer = InkLayer::StandeeMonsterWyvern;
-                        boss.name = "The Sunken Wyrm";
-                        boss.width = 4.6f; boss.height = 4.6f;
-                        boss.hp = 180; boss.maxHp = 180;
-                        boss.telegraphRadius = 6.2f;
-                        boss.telegraphType = TelegraphType::EnemyCircle;
-                        boss.isBoss = true;
-                        enemies_.push_back(boss);
-                    }
-                } else if (rm.id >= 2 && enemies_.size() < 6) {
-                    EnemyAgent guard{};
-                    guard.pos = {cx_rm, 0.25f, cz_rm};
-                    guard.homePos = guard.pos;
-                    guard.standeeLayer = (rm.id % 2 == 0) ? InkLayer::StandeeMonsterBandit : InkLayer::StandeeMonsterSlime;
-                    guard.name = (rm.id % 2 == 0) ? "Crypt Marauder" : "Rune Slime";
-                    guard.hp = 55; guard.maxHp = 55;
-                    guard.telegraphRadius = 3.8f;
-                    guard.telegraphType = (rm.id % 2 == 0) ? TelegraphType::EnemyCone : TelegraphType::EnemyCircle;
-                    enemies_.push_back(guard);
-                }
-            }
-
-            if (!rm.label.empty()) {
-                float rSpan = std::max(6.0f, static_cast<float>(rm.label.size()) * 0.95f);
-                if (cx_rm >= minX - rSpan && cx_rm <= maxX + rSpan &&
-                    cz_rm >= minZ - 6.0f && cz_rm <= maxZ + 6.0f) {
-                    CurvedMapBanner rmBanner{};
-                    rmBanner.text = rm.label;
-                    rmBanner.p0 = {cx_rm - rSpan, cz_rm - 1.2f};
-                    rmBanner.p1 = {cx_rm,         cz_rm - 2.4f};
-                    rmBanner.p2 = {cx_rm + rSpan, cz_rm - 1.2f};
-                    rmBanner.letterSize = 1.9f;
-                    rmBanner.isRegionHeader = false;
-                    emitBannerToChunk(rmBanner, ch.bannerVerts, minX, maxX, minZ, maxZ);
-                }
-            }
-        }
-        for (const auto& p : voronoi_.pois()) {
-            if (p.pos.x >= minX && p.pos.x < maxX && p.pos.y >= minZ && p.pos.y < maxZ) {
-                uint16_t layer = InkLayer::StandeeDungeonArch;
-                if (p.category == PoiCategory::StandingStones) layer = InkLayer::StandeeStandingStone;
-                else if (p.category == PoiCategory::SunkenRuin) layer = InkLayer::StandeeTreasureChest;
-                if (p.category != PoiCategory::BossLair) {
+                if (rm.minX + 1.8f >= minX && rm.minX + 1.8f < maxX && rm.minZ + 1.8f >= minZ && rm.minZ + 1.8f < maxZ) {
                     StandeeInstance st{};
-                    st.worldPos[0] = p.pos.x; st.worldPos[1] = 0.25f; st.worldPos[2] = p.pos.y;
-                    st.width = 2.6f; st.height = 2.8f; st.texLayer = layer;
-                    st.flags = StandeeFlags::PopUpTilt;
+                    st.worldPos[0] = rm.minX + 1.8f; st.worldPos[1] = 0.25f; st.worldPos[2] = rm.minZ + 1.8f;
+                    st.width = 1.4f; st.height = 1.5f; st.texLayer = InkLayer::StandeeCampfire;
+                    st.flags = StandeeFlags::Emissive | StandeeFlags::IdleBob;
                     ch.standees.push_back(st);
+                }
+                if (rm.maxX - 1.8f >= minX && rm.maxX - 1.8f < maxX && rm.minZ + 1.8f >= minZ && rm.minZ + 1.8f < maxZ) {
+                    StandeeInstance st{};
+                    st.worldPos[0] = rm.maxX - 1.8f; st.worldPos[1] = 0.25f; st.worldPos[2] = rm.minZ + 1.8f;
+                    st.width = 1.4f; st.height = 1.5f; st.texLayer = InkLayer::StandeeCampfire;
+                    st.flags = StandeeFlags::Emissive | StandeeFlags::IdleBob;
+                    ch.standees.push_back(st);
+                }
+                if (cx_rm >= minX && cx_rm < maxX && cz_rm >= minZ && cz_rm < maxZ) {
+                    PointLight pl{};
+                    pl.position[0] = cx_rm; pl.position[1] = 2.2f; pl.position[2] = cz_rm;
+                    pl.radius = 16.0f;
+                    if (voronoi_.dungeonTheme() == DungeonTheme::SunkenSanctum) {
+                        pl.color[0] = 0.45f; pl.color[1] = 0.85f; pl.color[2] = 1.0f; // Cool cyan cistern light
+                    } else if (voronoi_.dungeonTheme() == DungeonTheme::MoltenVault) {
+                        pl.color[0] = 1.0f; pl.color[1] = 0.48f; pl.color[2] = 0.16f; // Fiery ember light
+                    } else if (voronoi_.dungeonTheme() == DungeonTheme::GildedReliquary) {
+                        pl.color[0] = 1.0f; pl.color[1] = 0.88f; pl.color[2] = 0.40f; // Bright gilded light
+                    } else {
+                        pl.color[0] = 1.0f; pl.color[1] = 0.72f; pl.color[2] = 0.36f; // Warm torchlight
+                    }
+                    pl.intensity = 1.35f;
+                    ch.lights.push_back(pl);
+
+                    if (rm.isBossRoom) {
+                        bool hasBoss = false;
+                        for (const auto& en : enemies_) if (en.isBoss) { hasBoss = true; break; }
+                        if (!hasBoss) {
+                            EnemyAgent boss{};
+                            boss.pos = {cx_rm, 0.25f, cz_rm + 2.0f};
+                            boss.homePos = boss.pos;
+                            boss.standeeLayer = InkLayer::StandeeMonsterWyvern;
+                            boss.name = (voronoi_.dungeonTheme() == DungeonTheme::MoltenVault) ? "The Molten Drake" :
+                                        (voronoi_.dungeonTheme() == DungeonTheme::WhisperingCrypt) ? "The Bone Archon" :
+                                        (voronoi_.dungeonTheme() == DungeonTheme::GildedReliquary) ? "The Gilded Titan" :
+                                        "The Sunken Wyrm";
+                            boss.width = 4.6f; boss.height = 4.6f;
+                            boss.hp = 220; boss.maxHp = 220;
+                            boss.telegraphRadius = 6.2f;
+                            boss.telegraphType = TelegraphType::EnemyCircle;
+                            boss.isBoss = true;
+                            enemies_.push_back(boss);
+                        }
+                    } else if (rm.id >= 1 && enemies_.size() < 6) {
+                        EnemyAgent guard{};
+                        guard.pos = {cx_rm, 0.25f, cz_rm};
+                        guard.homePos = guard.pos;
+                        guard.standeeLayer = (rm.id % 2 == 0) ? InkLayer::StandeeMonsterBandit : InkLayer::StandeeMonsterSlime;
+                        guard.name = (voronoi_.dungeonTheme() == DungeonTheme::WhisperingCrypt) ? "Barrow Wight" :
+                                     (voronoi_.dungeonTheme() == DungeonTheme::MoltenVault) ? "Magma Slime" :
+                                     (rm.id % 2 == 0) ? "Crypt Marauder" : "Rune Slime";
+                        guard.hp = 55; guard.maxHp = 55;
+                        guard.telegraphRadius = 3.8f;
+                        guard.telegraphType = (rm.id % 2 == 0) ? TelegraphType::EnemyCone : TelegraphType::EnemyCircle;
+                        enemies_.push_back(guard);
+                    }
+                }
+            }
+            for (const auto& p : voronoi_.pois()) {
+                if (p.pos.x >= minX && p.pos.x < maxX && p.pos.y >= minZ && p.pos.y < maxZ) {
+                    uint16_t layer = InkLayer::StandeeDungeonArch;
+                    if (p.category == PoiCategory::StandingStones) layer = InkLayer::StandeeStandingStone;
+                    else if (p.category == PoiCategory::SunkenRuin) layer = InkLayer::StandeeTreasureChest;
+                    if (p.category != PoiCategory::BossLair) {
+                        StandeeInstance st{};
+                        st.worldPos[0] = p.pos.x; st.worldPos[1] = 0.25f; st.worldPos[2] = p.pos.y;
+                        st.width = 2.6f; st.height = 2.8f; st.texLayer = layer;
+                        st.flags = StandeeFlags::PopUpTilt;
+                        ch.standees.push_back(st);
+                    }
                 }
             }
         }
@@ -549,15 +730,46 @@ MapChunk ChartWorld::bakeChunk(int cx, int cz) {
                     st.flags = StandeeFlags::WindSway | StandeeFlags::PartableCanopy | StandeeFlags::PopUpTilt | flipFlag;
                     st.phaseOffset = std::fmod(std::abs(wx * 1.37f + wz * 2.19f), 6.28f);
                     ch.standees.push_back(st);
+                } else if (s.biomePrimary == BiomeId::AridSteppe) {
+                    float localMoisture = voronoi_.rawMoisture(wx, wz);
+                    if (localMoisture > 0.35f && (h % 3u == 0u)) {
+                        // Oasis date palms swaying above the emerald pool
+                        StandeeInstance st{};
+                        st.worldPos[0] = wx; st.worldPos[1] = s.elevation; st.worldPos[2] = wz;
+                        st.width = 2.6f + static_cast<float>(h & 3u) * 0.28f;
+                        st.height = st.width * 1.15f;
+                        st.texLayer = InkLayer::StandeeForestPalm;
+                        st.flags = StandeeFlags::WindSway | StandeeFlags::PartableCanopy | StandeeFlags::PopUpTilt | flipFlag;
+                        st.phaseOffset = std::fmod(std::abs(wx * 1.37f + wz * 2.19f), 6.28f);
+                        ch.standees.push_back(st);
+                    } else if (h % 13u == 0u) {
+                        // Sun-baked monoliths & sandstone pillars across the arid plains
+                        StandeeInstance st{};
+                        st.worldPos[0] = wx; st.worldPos[1] = s.elevation - 0.05f; st.worldPos[2] = wz;
+                        st.width = 2.2f; st.height = 2.5f;
+                        st.texLayer = ((h >> 2u) & 1u) ? InkLayer::StandeeStandingStone : InkLayer::StandeeRockPillar;
+                        st.flags = StandeeFlags::PopUpTilt | flipFlag;
+                        st.phaseOffset = std::fmod(std::abs(wx * 1.37f + wz * 2.19f), 6.28f);
+                        ch.standees.push_back(st);
+                    } else if (h % 17u == 0u) {
+                        // Arid desert scrub / dried grass tuft
+                        StandeeInstance gs{};
+                        gs.worldPos[0] = wx; gs.worldPos[1] = s.elevation; gs.worldPos[2] = wz;
+                        gs.width = 1.25f; gs.height = 0.95f;
+                        gs.texLayer = InkLayer::StandeeGrassPatch;
+                        gs.flags = StandeeFlags::WindSway | StandeeFlags::NoShadow | flipFlag;
+                        gs.phaseOffset = std::fmod(std::abs(wx * 2.13f + wz * 1.79f), 6.28f);
+                        ch.standees.push_back(gs);
+                    }
                 }
 
-                // Scatter wandering slimes in wilderness
+                // Scatter wandering slimes and desert creatures in wilderness
                 if (s.sdfCoast > 3.5f && s.elevation < 4.2f && (h % 59u == 0u) && enemies_.size() < 24) {
                     EnemyAgent slime{};
                     slime.pos = {wx, s.elevation, wz};
                     slime.homePos = slime.pos;
                     slime.standeeLayer = InkLayer::StandeeMonsterSlime;
-                    slime.name = "Wild Ink Slime";
+                    slime.name = (s.biomePrimary == BiomeId::AridSteppe || s.biomePrimary == BiomeId::BadlandsCanyon) ? "Dune Scuttler" : "Wild Ink Slime";
                     slime.width = 1.9f; slime.height = 1.9f;
                     slime.hp = 40; slime.maxHp = 40;
                     slime.telegraphRadius = 3.2f;
@@ -581,8 +793,19 @@ MapChunk ChartWorld::bakeChunk(int cx, int cz) {
                 emitBannerToChunk(b, ch.bannerVerts, minX, maxX, minZ, maxZ);
             }
         }
+    }
+
+    auto customBannerIntersects = [&](const CurvedMapBanner& b) {
+        float bMinX = std::min({b.p0.x, b.p1.x, b.p2.x}) - 20.0f;
+        float bMaxX = std::max({b.p0.x, b.p1.x, b.p2.x}) + 20.0f;
+        float bMinZ = std::min({b.p0.y, b.p1.y, b.p2.y}) - 20.0f;
+        float bMaxZ = std::max({b.p0.y, b.p1.y, b.p2.y}) + 20.0f;
+        return (bMaxX >= minX && bMinX <= maxX && bMaxZ >= minZ && bMinZ <= maxZ);
+    };
+
+    if (!voronoi_.isDungeonMode()) {
         for (const auto& b : customBanners_) {
-            if (bannerIntersects(b)) {
+            if (customBannerIntersects(b)) {
                 emitBannerToChunk(b, ch.bannerVerts, minX, maxX, minZ, maxZ);
             }
         }
@@ -741,6 +964,43 @@ ChartStats ChartWorld::rebuildWorldGeometry(float centerWorldX, float centerWorl
 
 void ChartWorld::fillDiscoveryGrid(int centerCx, int centerCz, float outGrid[16][4]) const noexcept {
     std::memset(outGrid, 0, sizeof(float) * 64);
+    if (voronoi_.isDungeonMode()) {
+        const auto& rooms = voronoi_.dungeonRooms();
+        const auto& corrs = voronoi_.dungeonCorridors();
+        const auto& pools = voronoi_.dungeonWaterPools();
+
+        // outGrid[0..5]: Rooms (minX, minZ, maxX, maxZ)
+        for (size_t i = 0; i < rooms.size() && i < 6; ++i) {
+            outGrid[i][0] = rooms[i].minX;
+            outGrid[i][1] = rooms[i].minZ;
+            outGrid[i][2] = rooms[i].maxX;
+            outGrid[i][3] = rooms[i].maxZ;
+        }
+
+        // outGrid[6..10]: Corridors (p0.x, p0.y, p1.x, p1.y)
+        for (size_t i = 0; i < corrs.size() && i < 5; ++i) {
+            outGrid[6 + i][0] = corrs[i].p0.x;
+            outGrid[6 + i][1] = corrs[i].p0.y;
+            outGrid[6 + i][2] = corrs[i].p1.x;
+            outGrid[6 + i][3] = corrs[i].p1.y;
+        }
+
+        // outGrid[11]: Counts (roomCount, corrCount, poolCount, 0.0)
+        outGrid[11][0] = static_cast<float>(std::min<size_t>(rooms.size(), 6));
+        outGrid[11][1] = static_cast<float>(std::min<size_t>(corrs.size(), 5));
+        outGrid[11][2] = static_cast<float>(std::min<size_t>(pools.size(), 4));
+        outGrid[11][3] = 0.0f;
+
+        // outGrid[12..15]: Water pools (minX, minZ, maxX, maxZ)
+        for (size_t i = 0; i < pools.size() && i < 4; ++i) {
+            outGrid[12 + i][0] = pools[i].minX;
+            outGrid[12 + i][1] = pools[i].minZ;
+            outGrid[12 + i][2] = pools[i].maxX;
+            outGrid[12 + i][3] = pools[i].maxZ;
+        }
+        return;
+    }
+
     constexpr int stride = kChunkRadius * 2 + 1; // 5
     for (int dz = -kChunkRadius; dz <= kChunkRadius; ++dz) {
         for (int dx = -kChunkRadius; dx <= kChunkRadius; ++dx) {
@@ -835,17 +1095,19 @@ void ChartWorld::moveHero(float moveX, float moveZ, bool sprintOrDodge, float dt
     float nextZ = hero_.pos.z + moveZ * speed * dt;
     if (voronoi_.isDungeonMode()) {
         nextX = std::clamp(nextX, -68.0f, 68.0f);
-        nextZ = std::clamp(nextZ, -68.0f, 68.0f);
+        nextZ = std::clamp(nextZ, -68.0f, 88.0f);
     }
     ChartFieldSample s = voronoi_.sampleAt(nextX, nextZ);
 
     if (voronoi_.isDungeonMode()) {
-        // Collide against hatched One-Page Dungeon walls
-        if (s.biomePrimary != BiomeId::DungeonHatchedWall) {
+        // Collide against hatched One-Page Dungeon walls with comfortable boundary padding
+        if (s.sdfCoast > 0.30f && s.biomePrimary != BiomeId::DungeonHatchedWall) {
             hero_.pos.x = nextX;
             hero_.pos.z = nextZ;
             hero_.pos.y = std::max(0.0f, s.elevation);
         }
+        // Continuous chunk streaming in dungeon mode so surrounding dungeon chunks always extend 64m north!
+        updateChunkStreaming(hero_.pos.x, hero_.pos.z, false);
     } else {
         hero_.pos.x = nextX;
         hero_.pos.z = nextZ;
@@ -859,14 +1121,42 @@ void ChartWorld::moveHero(float moveX, float moveZ, bool sprintOrDodge, float dt
 
     // Update active POI region banner when approaching landmarks
     float bestPoiDist = 18.0f;
+    const ChartPoi* nearestPoi = nullptr;
     for (const auto& p : voronoi_.pois()) {
         float dx = hero_.pos.x - p.pos.x;
         float dz = hero_.pos.z - p.pos.y;
         float d = std::sqrt(dx * dx + dz * dz);
         if (d < bestPoiDist) {
             bestPoiDist = d;
-            hero_.activeRegionName = p.name;
-            hero_.activeRegionSub  = p.subtitle;
+            nearestPoi = &p;
+        }
+    }
+    if (nearestPoi) {
+        if (hero_.activeRegionName != nearestPoi->name) {
+            hero_.activeRegionName = nearestPoi->name;
+            hero_.activeRegionSub  = nearestPoi->subtitle;
+            triggerLocaleDiscovery(nearestPoi->name, nearestPoi->subtitle);
+        }
+    } else if (voronoi_.preset() == AtlasPreset::ContinentalPangaea) {
+        std::string provName = "THE IMPERIAL CROSSROADS";
+        std::string provSub  = "Heart of Pangaea";
+        if (hero_.pos.z > 35.0f) {
+            provName = "THE REALM OF SILVERVALE";
+            provSub  = "Highland Mountains";
+        } else if (hero_.pos.x > 35.0f) {
+            provName = "THE SUNSCORCHED EXPANSE";
+            provSub  = "Arid Wastes";
+        } else if (hero_.pos.x < -35.0f) {
+            provName = "KILDLAND";
+            provSub  = "The Perilous Shores";
+        } else if (hero_.pos.z < -35.0f) {
+            provName = "THE SHATTERED SEA";
+            provSub  = "Corsair's Atoll";
+        }
+        if (hero_.activeRegionName != provName) {
+            hero_.activeRegionName = provName;
+            hero_.activeRegionSub  = provSub;
+            triggerLocaleDiscovery(provName, provSub);
         }
     }
 }
@@ -957,6 +1247,45 @@ bool ChartWorld::tryToggleNearbyDungeon() {
         Vec3f retPos = overworldReturnPos_;
         generateCustomChart(overworldReturnSeed_, overworldReturnPreset_);
         hero_.pos = retPos;
+        switch (overworldReturnPreset_) {
+            case AtlasPreset::PerilousPeninsula:
+                hero_.activeRegionName = "LOWMILLBURG";
+                hero_.activeRegionSub  = "Kildland Realm";
+                break;
+            case AtlasPreset::ShatteredArchipelago:
+                hero_.activeRegionName = "CORSAIR'S HAVEN";
+                hero_.activeRegionSub  = "The Shattered Sea";
+                break;
+            case AtlasPreset::HighlandKingdom:
+                hero_.activeRegionName = "HIGHGUARD KEEP";
+                hero_.activeRegionSub  = "Silvervale Realm";
+                break;
+            case AtlasPreset::SunscorchedWastes:
+                hero_.activeRegionName = "AL-ZAHRA OASIS";
+                hero_.activeRegionSub  = "Sunscorched Wastes";
+                break;
+            case AtlasPreset::ContinentalPangaea:
+                if (retPos.z > 35.0f) {
+                    hero_.activeRegionName = "THE REALM OF SILVERVALE";
+                    hero_.activeRegionSub  = "Highland Mountains";
+                } else if (retPos.x > 35.0f) {
+                    hero_.activeRegionName = "THE SUNSCORCHED EXPANSE";
+                    hero_.activeRegionSub  = "Arid Wastes";
+                } else if (retPos.x < -35.0f) {
+                    hero_.activeRegionName = "KILDLAND";
+                    hero_.activeRegionSub  = "The Perilous Shores";
+                } else if (retPos.z < -35.0f) {
+                    hero_.activeRegionName = "THE SHATTERED SEA";
+                    hero_.activeRegionSub  = "Corsair's Atoll";
+                } else {
+                    hero_.activeRegionName = "THE IMPERIAL CROSSROADS";
+                    hero_.activeRegionSub  = "Heart of Pangaea";
+                }
+                break;
+            default:
+                break;
+        }
+        triggerLocaleDiscovery(hero_.activeRegionName, hero_.activeRegionSub);
         rebuildWorldGeometry(retPos.x, retPos.z);
         return true;
     }
@@ -967,8 +1296,10 @@ bool ChartWorld::tryToggleNearbyDungeon() {
             float dz = hero_.pos.z - p.pos.y;
             if (std::sqrt(dx * dx + dz * dz) < 6.5f) {
                 overworldReturnPos_ = hero_.pos;
+                overworldReturnSeed_ = voronoi_.seed();
+                overworldReturnPreset_ = voronoi_.preset();
                 buildOnePageDungeon(p.seed);
-                rebuildWorldGeometry(0.0f, 0.0f);
+                rebuildWorldGeometry(hero_.pos.x, hero_.pos.z);
                 return true;
             }
         }
@@ -1194,6 +1525,14 @@ void ChartWorld::updateSimulation(float dt, uint32_t viewportW, uint32_t viewpor
         floatingNumbers_.end()
     );
 
+    // Advance ephemeral locale discovery banner timer
+    if (localeBanner_.active) {
+        localeBanner_.timer += dt;
+        if (localeBanner_.timer >= localeBanner_.duration) {
+            localeBanner_.active = false;
+        }
+    }
+
     buildDynamicStandeesAndTelegraphs();
     buildHudAndMapOverlay(viewportW, viewportH);
 }
@@ -1237,6 +1576,102 @@ void ChartWorld::buildHudAndMapOverlay(uint32_t viewportW, uint32_t viewportH) {
         eatsbits::ui::glyph::drawVectorText(overlay2D_, barX + barW - hintW - 16.0f, barY + 27.0f, 10.0f, ctrlHint, 0.76f, 0.74f, 0.68f, 0.9f);
     }
 #endif
+
+    // Ephemeral Region Discovery Banner (Shared C++ Engine Implementation: Native Desktop & Web)
+    if (localeBanner_.active) {
+        float t = localeBanner_.timer;
+        float alpha = 0.0f;
+        float yOffset = 0.0f;
+        constexpr float kFadeIn = 0.40f;
+        constexpr float kFadeOut = 0.60f;
+        float sustainEnd = std::max(kFadeIn, localeBanner_.duration - kFadeOut);
+
+        if (t < kFadeIn) {
+            float p = t / kFadeIn;
+            alpha = p * p * (3.0f - 2.0f * p);
+            yOffset = (1.0f - p) * -8.0f;
+        } else if (t < sustainEnd) {
+            alpha = 1.0f;
+            yOffset = 0.0f;
+        } else if (t < localeBanner_.duration) {
+            float p = (t - sustainEnd) / kFadeOut;
+            alpha = 1.0f - (p * p * (3.0f - 2.0f * p));
+            yOffset = p * 4.0f;
+        }
+        alpha = std::clamp(alpha, 0.0f, 1.0f);
+
+        if (alpha > 0.005f && !localeBanner_.title.empty()) {
+            float titleFontSize = 16.0f;
+            float subFontSize = 10.5f;
+            float titleW = eatsbits::ui::glyph::getVectorTextWidth(titleFontSize, localeBanner_.title);
+            float subW = localeBanner_.subtitle.empty() ? 0.0f : eatsbits::ui::glyph::getVectorTextWidth(subFontSize, localeBanner_.subtitle);
+
+            float contentW = std::max(titleW + 68.0f, subW + 40.0f);
+            float maxPillW = std::min(560.0f, vpW - 32.0f);
+            float pillW = std::clamp(contentW + 28.0f, 220.0f, maxPillW);
+            float pillH = localeBanner_.subtitle.empty() ? 38.0f : 52.0f;
+
+            float pillX = (vpW - pillW) * 0.5f;
+            float baseY = 64.0f;
+            float pillY = baseY + yOffset;
+
+            // Outer subtle drop-shadow
+            overlay2D_.drawRoundedRect(pillX - 2.0f, pillY + 2.0f, pillW + 4.0f, pillH + 4.0f, 14.0f, 0.02f, 0.015f, 0.01f, 0.42f * alpha);
+
+            // Dark vellum/obsidian card background
+            overlay2D_.drawRoundedRect(pillX, pillY, pillW, pillH, 12.0f, 0.10f, 0.075f, 0.05f, 0.88f * alpha);
+
+            // Warm gilded brass border outline
+            overlay2D_.drawRoundedRectOutline(pillX, pillY, pillW, pillH, 12.0f, 0.85f, 0.70f, 0.35f, 0.90f * alpha, 1.5f);
+
+            // Top rim gilded highlight
+            overlay2D_.drawLine(pillX + 16.0f, pillY + 2.0f, pillX + pillW - 16.0f, pillY + 2.0f, 0.98f, 0.86f, 0.48f, 0.32f * alpha, 1.0f);
+
+            float titleX = pillX + (pillW - titleW) * 0.5f;
+            float titleY = pillY + (localeBanner_.subtitle.empty() ? 11.0f : 9.0f);
+
+            // Flanking Diamond Flourishes (✦)
+            float diamondLeftX = titleX - 16.0f;
+            float diamondRightX = titleX + titleW + 16.0f;
+            float diamondY = titleY + titleFontSize * 0.5f - 1.0f;
+            float dW = 4.0f;
+            float dH = 5.5f;
+
+            auto drawDiamond = [&](float cx, float cy, float szW, float szH, float r, float g, float b, float a) {
+                overlay2D_.drawTriangle(cx, cy - szH, cx + szW, cy, cx, cy + szH, r, g, b, a);
+                overlay2D_.drawTriangle(cx, cy - szH, cx, cy + szH, cx - szW, cy, r, g, b, a);
+            };
+
+            // Diamond shadow
+            drawDiamond(diamondLeftX + 1.0f, diamondY + 1.0f, dW, dH, 0.04f, 0.03f, 0.02f, 0.75f * alpha);
+            drawDiamond(diamondRightX + 1.0f, diamondY + 1.0f, dW, dH, 0.04f, 0.03f, 0.02f, 0.75f * alpha);
+            // Diamond face
+            drawDiamond(diamondLeftX, diamondY, dW, dH, 0.96f, 0.78f, 0.28f, 0.95f * alpha);
+            drawDiamond(diamondRightX, diamondY, dW, dH, 0.96f, 0.78f, 0.28f, 0.95f * alpha);
+
+            // Flanking horizontal wing accent lines
+            overlay2D_.drawLine(diamondLeftX - 18.0f, diamondY, diamondLeftX - 6.0f, diamondY, 0.85f, 0.70f, 0.35f, 0.45f * alpha, 1.0f);
+            overlay2D_.drawLine(diamondRightX + 6.0f, diamondY, diamondRightX + 18.0f, diamondY, 0.85f, 0.70f, 0.35f, 0.45f * alpha, 1.0f);
+
+            // Title drop-shadow + text
+            eatsbits::ui::glyph::drawVectorText(overlay2D_, titleX + 1.5f, titleY + 1.5f, titleFontSize, localeBanner_.title, 0.04f, 0.03f, 0.02f, 0.85f * alpha);
+            eatsbits::ui::glyph::drawVectorText(overlay2D_, titleX, titleY, titleFontSize, localeBanner_.title, 0.99f, 0.95f, 0.84f, alpha);
+
+            // Subtitle & separator if present
+            if (!localeBanner_.subtitle.empty()) {
+                float divY = titleY + titleFontSize + 4.0f;
+                float divHalfW = std::min(pillW * 0.38f, (subW + 36.0f) * 0.5f);
+                float centerX = vpW * 0.5f;
+                overlay2D_.drawLine(centerX - divHalfW, divY, centerX + divHalfW, divY, 0.82f, 0.68f, 0.38f, 0.32f * alpha, 1.0f);
+                drawDiamond(centerX, divY, 2.5f, 2.5f, 0.95f, 0.80f, 0.40f, 0.75f * alpha);
+
+                float subX = pillX + (pillW - subW) * 0.5f;
+                float subY = divY + 4.0f;
+                eatsbits::ui::glyph::drawVectorText(overlay2D_, subX + 1.0f, subY + 1.0f, subFontSize, localeBanner_.subtitle, 0.04f, 0.03f, 0.02f, 0.75f * alpha);
+                eatsbits::ui::glyph::drawVectorText(overlay2D_, subX, subY, subFontSize, localeBanner_.subtitle, 0.94f, 0.82f, 0.48f, 0.92f * alpha);
+            }
+        }
+    }
 
     // Project 3D Floating Combat / Level-Up Numbers into 2D Screen Space
     if (!floatingNumbers_.empty()) {

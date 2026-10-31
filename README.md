@@ -48,13 +48,17 @@ It synthesizes:
 - **`T`:** Toggle dynamic **Day/Night Cycle** (smooth orbital sun & moon light, shifting atmospheric watches)
 - **`[` / `]`:** Step Time of Day backward / forward by 1 hour (adjust sun angle and hatch drop shadows)
 - **`M` / `Z`:** Toggle **Zoom-to-Atlas** mode (smoothly transitions between the 2.5D action camera and a high-altitude *Perilous Shores* cartographic map view)
-- **`1 / 2 / 3 / 4`:** Switch Chart Recipe:
+- **`1 / 2 / 3 / 4 / 5`:** Switch Chart Recipe:
   - `1`: `scenes/shattered_isles.eats` (*The Shattered Isles* - Corsair's Haven & Naval Archipelago)
   - `2`: `scenes/perilous_shores.eats` (*The Perilous Shores* Peninsula, Bay & Barrier Islands)
   - `3`: `scenes/highland_kingdom.eats` (*Silvervale Realm* Twin-Ridge River Valley)
   - `4`: `scenes/sunken_sanctum_dungeon.eats` (*The Sunken Sanctum* Cross-Hatched One-Page Dungeon)
+  - `5`: `scenes/sunscorched_wastes.eats` (*The Sunscorched Wastes* - Arid Dunes, Terraced Mesas & Oasis)
 
 ## Documentation
 
 - **[Architectural Blueprint (`BLUEPRINT.md`)](file:///c:/git/eatscharted/BLUEPRINT.md):** Full technical specification, WGSL shader design, data structures, and module layout.
+- **[Continental Procedural Generation Blueprint (`CONTINENTAL_PROCGEN_BLUEPRINT.md`)](file:///c:/git/eatscharted/CONTINENTAL_PROCGEN_BLUEPRINT.md):** Continental overland design, single-seed deterministic hierarchy, macro-climate Whittaker modeling, Voronoi province blending, and connecting the Ultima-inspired overland world.
+- **[World Mutation & Persistence Blueprint (`WORLD_MUTATION_BLUEPRINT.md`)](file:///c:/git/eatscharted/WORLD_MUTATION_BLUEPRINT.md):** Declarative Eatscript diff persistence, heightfield terraforming, and modular architectural placement.
+- **[Encharted Fork Charter (`ENCHARTED_CHARTER.md`)](file:///c:/git/eatscharted/ENCHARTED_CHARTER.md):** Architectural separation between Eatscharted (macro living cartography RPG) and Encharted (seamless 1:1 living world RPG).
 - **[Agent & Build Safety Rules (`AGENTS.md`)](file:///c:/git/eatscharted/AGENTS.md):** Strict policies regarding manual testing and Windows GPU process safety.

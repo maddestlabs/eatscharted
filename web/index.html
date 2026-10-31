@@ -555,8 +555,9 @@
             width: auto;
         }
 
-        /* Ephemeral Region Discovery Toast (Cat Quest / BotW Style) */
+        /* Ephemeral Region Discovery Toast (Unified Engine Rendering via WebGPU BatchRenderer2D) */
         .region-discovery-toast {
+            display: none !important; /* Rendered directly in-engine across desktop and web for uniform aesthetic & performance */
             position: absolute;
             top: calc(56px + env(safe-area-inset-top, 0px));
             left: 50%;
@@ -1287,7 +1288,8 @@
             { id: 'scenes/shattered_isles.eats', name: 'Shattered Isles', tag: 'Corsair\'s Haven & Naval Archipelago', icon: '⛵', key: '1' },
             { id: 'scenes/perilous_shores.eats', name: 'Perilous Shores', tag: 'Peninsula, Bay & Barrier Islands', icon: '🧭', key: '2' },
             { id: 'scenes/highland_kingdom.eats', name: 'Highland Kingdom', tag: 'Silvervale Twin-Ridge River Valley', icon: '🏔️', key: '3' },
-            { id: 'scenes/sunken_sanctum_dungeon.eats', name: 'Sunken Sanctum', tag: 'Cross-Hatched Watabou One-Page Dungeon', icon: '🗝️', key: '4' }
+            { id: 'scenes/sunken_sanctum_dungeon.eats', name: 'Sunken Sanctum', tag: 'Cross-Hatched Watabou One-Page Dungeon', icon: '🗝️', key: '4' },
+            { id: 'scenes/sunscorched_wastes.eats', name: 'Sunscorched Wastes', tag: 'Arid Dunes, Terraced Mesas & Oasis', icon: '☀️', key: '5' }
         ];
 
         let currentSceneIndex = 0;
@@ -1325,20 +1327,13 @@
         };
 
         function showRegionDiscoveryToast(regName, regSub) {
-            if (!regName || statsLedgerOpen) return;
-            const toast = document.getElementById('region-discovery-toast');
-            const tName = document.getElementById('toast-region-name');
-            const tSub = document.getElementById('toast-region-sub');
-            if (!toast || !tName || !tSub) return;
-
-            tName.innerText = regName;
-            tSub.innerText = regSub || '';
-            toast.classList.add('visible');
-
-            if (toastTimeoutId) clearTimeout(toastTimeoutId);
-            toastTimeoutId = setTimeout(function() {
-                toast.classList.remove('visible');
-            }, 2200);
+            if (!regName) return;
+            // Forward discovery event directly to the in-engine WebGPU renderer
+            if (typeof Module !== 'undefined' && Module.ccall) {
+                try {
+                    Module.ccall('eatscharted_trigger_locale_discovery', null, ['string', 'string'], [regName, regSub || '']);
+                } catch (err) {}
+            }
         }
 
         window.hideAppLoadingScreen = function() {
@@ -1549,7 +1544,6 @@
 
                 if (regName && regName !== lastToastRegion) {
                     lastToastRegion = regName;
-                    showRegionDiscoveryToast(regName, regSub);
                 }
 
                 const elName = document.getElementById('hud-region-name');

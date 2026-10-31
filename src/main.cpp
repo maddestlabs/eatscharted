@@ -7,7 +7,7 @@
 #include <string>
 
 int main(int argc, char** argv) {
-    std::string scriptPath = "scenes/shattered_isles.eats";
+    std::string scriptPath = "scenes/continental_overworld.eats";
     std::string outputPngPath;
     uint32_t width = 1280;
     uint32_t height = 720;
@@ -37,11 +37,11 @@ int main(int argc, char** argv) {
         std::cout << "[Eatscharted] Executing Eatscript cartography recipe: " << scriptPath << "\n";
         if (!scriptEngine.executeFile(scriptPath)) {
             std::cerr << "[Eatscharted] Eatscript error: " << scriptEngine.lastError() << "\n";
-            world.buildShatteredArchipelago(1715u);
+            world.buildContinentalPangaea(2026u);
         }
     } else {
-        std::cout << "[Eatscharted] Building default Shattered Isles (Corsair's Haven) 2.5D Living Cartography World...\n";
-        world.buildShatteredArchipelago(1715u);
+        std::cout << "[Eatscharted] Building default Continental Pangaea (Imperial Crossroads) 2.5D Living Cartography World...\n";
+        world.buildContinentalPangaea(2026u);
     }
 
     eatscharted::ChartStats stats = world.rebuildWorldGeometry();

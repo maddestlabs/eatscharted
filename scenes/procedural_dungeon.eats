@@ -1,0 +1,19 @@
+# ==============================================================================
+# Eatscharted: Procedural Watabou Dungeon (Hierarchical Sub-Seeding Prototype)
+# ==============================================================================
+# Demonstrates deriving a deterministic sub-seed from a master world seed
+# to procedurally generate unique 2.5D dungeons with distinct topologies,
+# themes, props, lighting, and encounters.
+
+# 1. Master World Seed & Dungeon Portal ID
+var master_seed = 1492
+var dungeon_portal_id = 5
+var dungeon_floor = 1
+
+# 2. Derive Unique Deterministic Sub-Seed
+var sub_seed = chart.derive_sub_seed(master_seed, dungeon_portal_id, dungeon_floor)
+
+# 3. Generate Procedural Dungeon (theme="auto" derives theme & topology from sub_seed)
+# Supported themes: "auto", "sunken", "crypt", "molten", "gilded"
+dungeon.build_procedural(seed=sub_seed, theme="auto")
+

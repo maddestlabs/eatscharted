@@ -51,6 +51,10 @@ void ChartScriptEngine::registerChartBindings() {
     chartObj["name"] = Value("Eatscharted25DCore");
     evaluator_.setVariable("chart", Value(chartObj));
 
+    std::map<std::string, Value> dungeonObj;
+    dungeonObj["name"] = Value("OnePageDungeonEngine");
+    evaluator_.setVariable("dungeon", Value(dungeonObj));
+
     evaluator_.registerMemberFunction("chart", "clear", [this](const auto&, const auto&) -> Value {
         world_.clear();
         return Value(true);
@@ -74,9 +78,222 @@ void ChartScriptEngine::registerChartBindings() {
         return Value(true);
     });
 
+    evaluator_.registerMemberFunction("chart", "build_sunscorched_wastes", [this](const auto& args, const auto& kwargs) -> Value {
+        uint32_t seed = static_cast<uint32_t>(resolveArg(args, kwargs, 0, "seed", Value(1066)).asInt());
+        world_.buildSunscorchedWastes(seed);
+        return Value(true);
+    });
+
+    evaluator_.registerMemberFunction("chart", "build_continental_overworld", [this](const auto& args, const auto& kwargs) -> Value {
+        uint32_t seed = static_cast<uint32_t>(resolveArg(args, kwargs, 0, "seed", Value(2026)).asInt());
+        world_.buildContinentalPangaea(seed);
+        return Value(true);
+    });
+
     evaluator_.registerMemberFunction("chart", "build_one_page_dungeon", [this](const auto& args, const auto& kwargs) -> Value {
         uint32_t seed = static_cast<uint32_t>(resolveArg(args, kwargs, 0, "seed", Value(999)).asInt());
         world_.buildOnePageDungeon(seed);
+        return Value(true);
+    });
+
+    evaluator_.registerMemberFunction("chart", "derive_sub_seed", [this](const auto& args, const auto& kwargs) -> Value {
+        uint32_t masterSeed = static_cast<uint32_t>(resolveArg(args, kwargs, 0, "master_seed", Value(world_.voronoi().seed())).asInt());
+        uint32_t featureId  = static_cast<uint32_t>(resolveArg(args, kwargs, 1, "feature_id", Value(1)).asInt());
+        uint32_t floor      = static_cast<uint32_t>(resolveArg(args, kwargs, 2, "floor", Value(1)).asInt());
+        uint32_t subSeed    = VoronoiAtlas::deriveSubSeed(masterSeed, featureId, floor);
+        return Value(subSeed);
+    });
+
+    evaluator_.registerMemberFunction("chart", "get_world_seed", [this](const auto&, const auto&) -> Value {
+        return Value(world_.voronoi().seed());
+    });
+
+    evaluator_.registerMemberFunction("chart", "build_watabou_dungeon", [this](const auto& args, const auto& kwargs) -> Value {
+        uint32_t seed = static_cast<uint32_t>(resolveArg(args, kwargs, 0, "seed", Value(999)).asInt());
+        std::string themeStr = resolveArg(args, kwargs, 1, "theme", Value("auto")).asString();
+        DungeonTheme th = DungeonTheme::Auto;
+        if (themeStr == "sunken") th = DungeonTheme::SunkenSanctum;
+        else if (themeStr == "crypt") th = DungeonTheme::WhisperingCrypt;
+        else if (themeStr == "molten") th = DungeonTheme::MoltenVault;
+        else if (themeStr == "gilded") th = DungeonTheme::GildedReliquary;
+        world_.buildWatabouDungeon(seed, th);
+        return Value(true);
+    });
+
+    // Watabou One-Page Dungeon Engine API bindings
+    evaluator_.registerMemberFunction("dungeon", "init", [this](const auto& args, const auto& kwargs) -> Value {
+        uint32_t seed = static_cast<uint32_t>(resolveArg(args, kwargs, 0, "seed", Value(999)).asInt());
+        std::string title = resolveArg(args, kwargs, 1, "title", Value("THE SUNKEN SANCTUM")).asString();
+        std::string subtitle = resolveArg(args, kwargs, 2, "subtitle", Value("Watabou One-Page Dungeon")).asString();
+        world_.initDungeon(seed, title, subtitle);
+        return Value(true);
+    });
+
+    evaluator_.registerMemberFunction("dungeon", "set_sunlight", [this](const auto& args, const auto& kwargs) -> Value {
+        float r = resolveArg(args, kwargs, 0, "r", Value(1.0)).asFloat();
+        float g = resolveArg(args, kwargs, 1, "g", Value(0.9)).asFloat();
+        float b = resolveArg(args, kwargs, 2, "b", Value(0.8)).asFloat();
+        float intensity = resolveArg(args, kwargs, 3, "intensity", Value(1.0)).asFloat();
+        auto atm = world_.atmosphere();
+        atm.sunColor = {r * intensity, g * intensity, b * intensity};
+        world_.setAtmosphere(atm);
+        return Value(true);
+    });
+
+    evaluator_.registerMemberFunction("dungeon", "enable_day_night", [this](const auto& args, const auto& kwargs) -> Value {
+        bool enable = resolveArg(args, kwargs, 0, "enable", Value(true)).asBoolean();
+        world_.setUseDayNightCycle(enable);
+        return Value(true);
+    });
+
+    evaluator_.registerMemberFunction("dungeon", "set_ambient", [this](const auto& args, const auto& kwargs) -> Value {
+        float r = resolveArg(args, kwargs, 0, "r", Value(0.02)).asFloat();
+        float g = resolveArg(args, kwargs, 1, "g", Value(0.02)).asFloat();
+        float b = resolveArg(args, kwargs, 2, "b", Value(0.03)).asFloat();
+        auto atm = world_.atmosphere();
+        atm.skyZenith = {r, g, b};
+        atm.skyHorizon = {r * 1.5f, g * 1.5f, b * 1.5f};
+        world_.setAtmosphere(atm);
+        return Value(true);
+    });
+
+    evaluator_.registerMemberFunction("dungeon", "add_room", [this](const auto& args, const auto& kwargs) -> Value {
+        float minX = resolveArg(args, kwargs, 0, "min_x", Value(-10.0)).asFloat();
+        float minZ = resolveArg(args, kwargs, 1, "min_z", Value(-10.0)).asFloat();
+        float maxX = resolveArg(args, kwargs, 2, "max_x", Value(10.0)).asFloat();
+        float maxZ = resolveArg(args, kwargs, 3, "max_z", Value(10.0)).asFloat();
+        std::string label = resolveArg(args, kwargs, 4, "label", Value("")).asString();
+        bool water = resolveArg(args, kwargs, 5, "water", Value(false)).asBoolean();
+        bool boss = resolveArg(args, kwargs, 6, "boss", Value(false)).asBoolean();
+        world_.addDungeonRoom(minX, minZ, maxX, maxZ, label, water, boss);
+        return Value(true);
+    });
+
+    evaluator_.registerMemberFunction("dungeon", "add_corridor", [this](const auto& args, const auto& kwargs) -> Value {
+        float x1 = resolveArg(args, kwargs, 0, "x1", Value(0.0)).asFloat();
+        float z1 = resolveArg(args, kwargs, 1, "z1", Value(0.0)).asFloat();
+        float x2 = resolveArg(args, kwargs, 2, "x2", Value(0.0)).asFloat();
+        float z2 = resolveArg(args, kwargs, 3, "z2", Value(10.0)).asFloat();
+        float width = resolveArg(args, kwargs, 4, "width", Value(3.2)).asFloat();
+        world_.addDungeonCorridor(x1, z1, x2, z2, width);
+        return Value(true);
+    });
+
+    evaluator_.registerMemberFunction("dungeon", "add_water_pool", [this](const auto& args, const auto& kwargs) -> Value {
+        float minX = resolveArg(args, kwargs, 0, "min_x", Value(-5.0)).asFloat();
+        float minZ = resolveArg(args, kwargs, 1, "min_z", Value(-5.0)).asFloat();
+        float maxX = resolveArg(args, kwargs, 2, "max_x", Value(5.0)).asFloat();
+        float maxZ = resolveArg(args, kwargs, 3, "max_z", Value(5.0)).asFloat();
+        world_.addDungeonWaterPool(minX, minZ, maxX, maxZ);
+        return Value(true);
+    });
+
+    evaluator_.registerMemberFunction("dungeon", "add_torch", [this](const auto& args, const auto& kwargs) -> Value {
+        float x = resolveArg(args, kwargs, 0, "x", Value(0.0)).asFloat();
+        float z = resolveArg(args, kwargs, 1, "z", Value(0.0)).asFloat();
+        float r = resolveArg(args, kwargs, 2, "r", Value(1.0)).asFloat();
+        float g = resolveArg(args, kwargs, 3, "g", Value(0.72)).asFloat();
+        float b = resolveArg(args, kwargs, 4, "b", Value(0.36)).asFloat();
+        float radius = resolveArg(args, kwargs, 5, "radius", Value(14.0)).asFloat();
+        float intensity = resolveArg(args, kwargs, 6, "intensity", Value(1.35)).asFloat();
+        world_.addDungeonTorch({x, 0.25f, z}, {r, g, b}, radius, intensity);
+        return Value(true);
+    });
+
+    evaluator_.registerMemberFunction("dungeon", "add_pillar", [this](const auto& args, const auto& kwargs) -> Value {
+        float x = resolveArg(args, kwargs, 0, "x", Value(0.0)).asFloat();
+        float z = resolveArg(args, kwargs, 1, "z", Value(0.0)).asFloat();
+        world_.addDungeonPillar({x, 0.25f, z});
+        return Value(true);
+    });
+
+    evaluator_.registerMemberFunction("dungeon", "add_pillar_row", [this](const auto& args, const auto& kwargs) -> Value {
+        float x1 = resolveArg(args, kwargs, 0, "x1", Value(-10.0)).asFloat();
+        float z1 = resolveArg(args, kwargs, 1, "z1", Value(0.0)).asFloat();
+        float x2 = resolveArg(args, kwargs, 2, "x2", Value(10.0)).asFloat();
+        float z2 = resolveArg(args, kwargs, 3, "z2", Value(0.0)).asFloat();
+        int count = resolveArg(args, kwargs, 4, "count", Value(4)).asInt();
+        if (count < 2) count = 2;
+        for (int i = 0; i < count; ++i) {
+            float t = static_cast<float>(i) / static_cast<float>(count - 1);
+            float px = x1 + t * (x2 - x1);
+            float pz = z1 + t * (z2 - z1);
+            world_.addDungeonPillar({px, 0.25f, pz});
+        }
+        return Value(true);
+    });
+
+    evaluator_.registerMemberFunction("dungeon", "add_chest", [this](const auto& args, const auto& kwargs) -> Value {
+        float x = resolveArg(args, kwargs, 0, "x", Value(0.0)).asFloat();
+        float z = resolveArg(args, kwargs, 1, "z", Value(0.0)).asFloat();
+        world_.addDungeonChest({x, 0.25f, z});
+        return Value(true);
+    });
+
+    evaluator_.registerMemberFunction("dungeon", "add_exit_portal", [this](const auto& args, const auto& kwargs) -> Value {
+        float x = resolveArg(args, kwargs, 0, "x", Value(0.0)).asFloat();
+        float z = resolveArg(args, kwargs, 1, "z", Value(-30.0)).asFloat();
+        world_.addDungeonExitPortal({x, 0.25f, z});
+        return Value(true);
+    });
+
+    evaluator_.registerMemberFunction("dungeon", "add_enemy", [this](const auto& args, const auto& kwargs) -> Value {
+        float x = resolveArg(args, kwargs, 0, "x", Value(0.0)).asFloat();
+        float z = resolveArg(args, kwargs, 1, "z", Value(0.0)).asFloat();
+        std::string type = resolveArg(args, kwargs, 2, "type", Value("slime")).asString();
+        std::string name = resolveArg(args, kwargs, 3, "name", Value("")).asString();
+        int hp = resolveArg(args, kwargs, 4, "hp", Value(50)).asInt();
+        bool boss = resolveArg(args, kwargs, 5, "boss", Value(false)).asBoolean();
+
+        uint16_t layer = InkLayer::StandeeMonsterSlime;
+        float telegraphRadius = 3.5f;
+        uint32_t telegraphType = TelegraphType::EnemyCircle;
+
+        if (type == "boss" || type == "wyvern" || boss) {
+            layer = InkLayer::StandeeMonsterWyvern;
+            if (name.empty()) name = "The Elder Wyvern";
+            if (hp <= 50) hp = 220;
+            telegraphRadius = 6.4f;
+            telegraphType = TelegraphType::EnemyCircle;
+            boss = true;
+        } else if (type == "bandit" || type == "marauder" || type == "skeleton") {
+            layer = InkLayer::StandeeMonsterBandit;
+            if (name.empty()) name = "Crypt Marauder";
+            if (hp <= 50) hp = 65;
+            telegraphRadius = 4.0f;
+            telegraphType = TelegraphType::EnemyCone;
+        } else {
+            layer = InkLayer::StandeeMonsterSlime;
+            if (name.empty()) name = "Rune Slime";
+            telegraphRadius = 3.2f;
+            telegraphType = TelegraphType::EnemyCircle;
+        }
+
+        world_.addDungeonEnemy({x, 0.25f, z}, name, layer, hp, boss, telegraphRadius, telegraphType);
+        return Value(true);
+    });
+
+    evaluator_.registerMemberFunction("dungeon", "build_watabou", [this](const auto& args, const auto& kwargs) -> Value {
+        uint32_t seed = static_cast<uint32_t>(resolveArg(args, kwargs, 0, "seed", Value(999)).asInt());
+        std::string themeStr = resolveArg(args, kwargs, 1, "theme", Value("auto")).asString();
+        DungeonTheme th = DungeonTheme::Auto;
+        if (themeStr == "sunken") th = DungeonTheme::SunkenSanctum;
+        else if (themeStr == "crypt") th = DungeonTheme::WhisperingCrypt;
+        else if (themeStr == "molten") th = DungeonTheme::MoltenVault;
+        else if (themeStr == "gilded") th = DungeonTheme::GildedReliquary;
+        world_.buildWatabouDungeon(seed, th);
+        return Value(true);
+    });
+
+    evaluator_.registerMemberFunction("dungeon", "build_procedural", [this](const auto& args, const auto& kwargs) -> Value {
+        uint32_t seed = static_cast<uint32_t>(resolveArg(args, kwargs, 0, "seed", Value(999)).asInt());
+        std::string themeStr = resolveArg(args, kwargs, 1, "theme", Value("auto")).asString();
+        DungeonTheme th = DungeonTheme::Auto;
+        if (themeStr == "sunken") th = DungeonTheme::SunkenSanctum;
+        else if (themeStr == "crypt") th = DungeonTheme::WhisperingCrypt;
+        else if (themeStr == "molten") th = DungeonTheme::MoltenVault;
+        else if (themeStr == "gilded") th = DungeonTheme::GildedReliquary;
+        world_.buildWatabouDungeon(seed, th);
         return Value(true);
     });
 

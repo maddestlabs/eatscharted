@@ -87,6 +87,14 @@ struct RaycastHit {
     BiomeId biome{BiomeId::LushMeadow};
 };
 
+struct LocaleBannerState {
+    std::string title;
+    std::string subtitle;
+    float timer{0.0f};
+    float duration{2.8f};
+    bool active{false};
+};
+
 /**
  * Complete 2.5D Living Cartography World State (Watabou Perilous Shores + Cat Quest).
  */
@@ -100,8 +108,24 @@ public:
     void buildPerilousPeninsula(uint32_t seed = 1492u);
     void buildShatteredArchipelago(uint32_t seed = 1715u);
     void buildHighlandKingdom(uint32_t seed = 1337u);
-    void buildOnePageDungeon(uint32_t seed = 999u);
+    void buildSunscorchedWastes(uint32_t seed = 1066u);
+    void buildContinentalPangaea(uint32_t seed = 2026u);
+    void buildOnePageDungeon(uint32_t seed = 999u, DungeonTheme theme = DungeonTheme::Auto);
     void generateCustomChart(uint32_t seed, AtlasPreset preset);
+
+    // Watabou One-Page Dungeon API
+    void initDungeon(uint32_t seed = 999u, std::string_view title = "THE SUNKEN SANCTUM", std::string_view subtitle = "Watabou One-Page Dungeon");
+    void addDungeonRoom(float minX, float minZ, float maxX, float maxZ, std::string_view label = "", bool water = false, bool boss = false);
+    void addDungeonCorridor(float x1, float z1, float x2, float z2, float width = 3.2f);
+    void addDungeonWaterPool(float minX, float minZ, float maxX, float maxZ);
+    void addDungeonTorch(Vec3f pos, Vec3f color = {1.0f, 0.72f, 0.36f}, float radius = 14.0f, float intensity = 1.35f);
+    void addDungeonPillar(Vec3f pos);
+    void addDungeonChest(Vec3f pos);
+    void addDungeonExitPortal(Vec3f pos);
+    void addDungeonEnemy(Vec3f pos, std::string_view name, uint16_t layer = InkLayer::StandeeMonsterSlime, int hp = 50, bool isBoss = false, float telegraphRadius = 3.5f, uint32_t telegraphType = TelegraphType::EnemyCircle);
+    void buildWatabouDungeon(uint32_t seed = 999u, DungeonTheme theme = DungeonTheme::Auto);
+    void buildProceduralDungeon(uint32_t seed = 999u, DungeonTheme theme = DungeonTheme::Auto);
+    [[nodiscard]] bool dungeonExplicitDressing() const noexcept { return dungeonExplicitDressing_; }
 
     // Rebuilds the 3D tabletop parchment mesh, 3D curved calligraphic banners, and static standees
     ChartStats rebuildWorldGeometry(float centerWorldX = 0.0f, float centerWorldZ = 0.0f);
@@ -124,6 +148,11 @@ public:
     void triggerArcaneSpell();
     bool tryToggleNearbyDungeon();
 
+    // Ephemeral named locale discovery banner (animated fade-in/out across Native & Web)
+    void triggerLocaleDiscovery(std::string_view name, std::string_view subtitle = "");
+    [[nodiscard]] const LocaleBannerState& localeBanner() const noexcept { return localeBanner_; }
+    [[nodiscard]] bool isLocaleBannerActive() const noexcept { return localeBanner_.active; }
+
     [[nodiscard]] RaycastHit raycast(Vec3f origin, Vec3f dir, float maxDist = 250.0f) const noexcept;
 
     // Accessors
@@ -143,6 +172,7 @@ public:
 
     [[nodiscard]] AtmosphereConfig& atmosphere() noexcept { return atmosphere_; }
     [[nodiscard]] const AtmosphereConfig& atmosphere() const noexcept { return atmosphere_; }
+    void setAtmosphere(const AtmosphereConfig& atm) noexcept { atmosphere_ = atm; }
 
     void setTimeOfDay(float t) noexcept { atmosphere_.timeOfDay = t; }
     [[nodiscard]] float timeOfDay() const noexcept { return atmosphere_.timeOfDay; }
@@ -204,11 +234,15 @@ private:
     CameraConfig camera_;
     AtmosphereConfig atmosphere_;
     bool useDayNightCycle_{true};
+    bool dungeonExplicitDressing_{false};
     float dayCycleSpeed_{1.0f / 180.0f}; // 1 full cycle per 3 minutes (180 seconds)
     float simTimeSec_{0.0f};
     uint32_t overworldReturnSeed_{1492u};
     AtlasPreset overworldReturnPreset_{AtlasPreset::PerilousPeninsula};
     Vec3f overworldReturnPos_{-4.0f, 0.5f, -1.5f};
+
+    LocaleBannerState localeBanner_;
+    std::string lastDiscoveredLocale_;
 
     eatsbits::ui::BatchRenderer2D overlay2D_;
 };
