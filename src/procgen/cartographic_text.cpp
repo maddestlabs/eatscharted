@@ -16,17 +16,18 @@ struct MeshPen {
     float cellH;    // Letter height in meters
     float strokeW;  // Base stroke width in meters
     const VoronoiAtlas& atlas;
-    std::vector<ChartVertex>& outVerts;
+    std::vector<ChartVertex>& outShadowVerts;
+    std::vector<ChartVertex>& outInkVerts;
     float minX, maxX, minZ, maxZ;
-    uint32_t packedColor;
-    float yOffset;
+    uint32_t shadowColor;
+    uint32_t primaryColor;
     Vec2f shadowShift;
 
     inline Vec2f mapPoint(float u, float v) const noexcept {
         // u in [0, 10], v in [0, 16]. Baseline at v = 14.0, cap top at v = 2.0
         float normU = (u - 5.0f) / 10.0f;
         float normV = (14.0f - v) / 12.0f;
-        return center + shadowShift + T * (normU * cellW) + N * (normV * cellH);
+        return center + T * (normU * cellW) + N * (normV * cellH);
     }
 
     void line(float u0, float v0, float u1, float v1, float widthMul = 1.0f) const {
@@ -45,42 +46,58 @@ struct MeshPen {
         Vec2f c2 = p1 + perp * halfW;
         Vec2f c3 = p1 - perp * halfW;
 
-        float qMinX = std::min({c0.x, c1.x, c2.x, c3.x});
-        float qMaxX = std::max({c0.x, c1.x, c2.x, c3.x});
-        float qMinZ = std::min({c0.y, c1.y, c2.y, c3.y});
-        float qMaxZ = std::max({c0.y, c1.y, c2.y, c3.y});
+        float pad = 0.25f;
+        float qMinX = std::min({c0.x, c1.x, c2.x, c3.x}) - pad;
+        float qMaxX = std::max({c0.x, c1.x, c2.x, c3.x}) + pad;
+        float qMinZ = std::min({c0.y, c1.y, c2.y, c3.y}) - pad;
+        float qMaxZ = std::max({c0.y, c1.y, c2.y, c3.y}) + pad;
 
         if (qMaxX < minX || qMinX > maxX || qMaxZ < minZ || qMinZ > maxZ) {
             return;
         }
 
-        auto makeVertex = [&](Vec2f p) -> ChartVertex {
-            float gy = std::max(0.0f, atlas.sampleAt(p.x, p.y).elevation);
+        float gy0 = std::max(0.0f, atlas.sampleAt(c0.x, c0.y).elevation);
+        float gy1 = std::max(0.0f, atlas.sampleAt(c1.x, c1.y).elevation);
+        float gy2 = std::max(0.0f, atlas.sampleAt(c2.x, c2.y).elevation);
+        float gy3 = std::max(0.0f, atlas.sampleAt(c3.x, c3.y).elevation);
+
+        auto buildVert = [](Vec2f p, float gy, float yOff, uint32_t col) noexcept -> ChartVertex {
             ChartVertex v{};
             v.pos[0] = p.x;
-            v.pos[1] = gy + yOffset;
+            v.pos[1] = gy + yOff;
             v.pos[2] = p.y;
             v.sdfCoast = 10.0f;
             v.normal[0] = 0.0f; v.normal[1] = 1.0f; v.normal[2] = 0.0f;
             v.sdfRoad = 100.0f;
             v.sdfRiver = 100.0f;
-            v.packedBiomes = packedColor;
+            v.packedBiomes = col;
             v.flags = ChartFlags::IsMapBanner;
             return v;
         };
 
-        ChartVertex vert0 = makeVertex(c0);
-        ChartVertex vert1 = makeVertex(c1);
-        ChartVertex vert2 = makeVertex(c2);
-        ChartVertex vert3 = makeVertex(c3);
+        // Pass 1: Shadow quad
+        ChartVertex sv0 = buildVert(c0 + shadowShift, gy0, 0.035f, shadowColor);
+        ChartVertex sv1 = buildVert(c1 + shadowShift, gy1, 0.035f, shadowColor);
+        ChartVertex sv2 = buildVert(c2 + shadowShift, gy2, 0.035f, shadowColor);
+        ChartVertex sv3 = buildVert(c3 + shadowShift, gy3, 0.035f, shadowColor);
+        outShadowVerts.push_back(sv0);
+        outShadowVerts.push_back(sv1);
+        outShadowVerts.push_back(sv2);
+        outShadowVerts.push_back(sv0);
+        outShadowVerts.push_back(sv2);
+        outShadowVerts.push_back(sv3);
 
-        outVerts.push_back(vert0);
-        outVerts.push_back(vert1);
-        outVerts.push_back(vert2);
-
-        outVerts.push_back(vert0);
-        outVerts.push_back(vert2);
-        outVerts.push_back(vert3);
+        // Pass 2: Primary ink quad
+        ChartVertex iv0 = buildVert(c0, gy0, 0.085f, primaryColor);
+        ChartVertex iv1 = buildVert(c1, gy1, 0.085f, primaryColor);
+        ChartVertex iv2 = buildVert(c2, gy2, 0.085f, primaryColor);
+        ChartVertex iv3 = buildVert(c3, gy3, 0.085f, primaryColor);
+        outInkVerts.push_back(iv0);
+        outInkVerts.push_back(iv1);
+        outInkVerts.push_back(iv2);
+        outInkVerts.push_back(iv0);
+        outInkVerts.push_back(iv2);
+        outInkVerts.push_back(iv3);
     }
 
     void quad(float u0, float v0, float uc, float vc, float u1, float v1, float widthMul = 1.0f) const {
@@ -510,7 +527,9 @@ void CartographicPathText::emitTextAlongPath(
 
     float baseStroke = std::max(0.18f, letterHeight * 0.10f); // Robust ~0.22m stroke width
 
-    // 4. Emit each glyph in two passes (Soft Ink Drop Shadow -> Bold India Ink)
+    // 4. Emit each glyph in a single combined pass (Soft Ink Drop Shadow -> Bold India Ink)
+    std::vector<ChartVertex> glyphInkVerts;
+    glyphInkVerts.reserve(96);
     for (size_t i = 0; i < text.size(); ++i) {
         char ch = text[i];
         float cw = charWidths[i];
@@ -521,27 +540,24 @@ void CartographicPathText::emitTextAlongPath(
 
         PathPoint pt = samplePathAtDist(centerDist);
 
-        // Pass 1: Warm Translucent Ink Drop Shadow on Parchment (shifted +0.12m X, -0.12m Z)
-        MeshPen shadowPen{
+        // Coarse glyph-level AABB cull against chunk boundaries
+        float glyphRadius = std::max(cw, letterHeight) + baseStroke + 0.5f;
+        if (pt.pos.x + glyphRadius < minChunkX || pt.pos.x - glyphRadius > maxChunkX ||
+            pt.pos.y + glyphRadius < minChunkZ || pt.pos.y - glyphRadius > maxChunkZ) {
+            continue;
+        }
+
+        glyphInkVerts.clear();
+        MeshPen pen{
             pt.pos, pt.tangent, pt.normal,
             cw, letterHeight, baseStroke,
-            atlas, outVerts,
+            atlas, outVerts, glyphInkVerts,
             minChunkX, maxChunkX, minChunkZ, maxChunkZ,
-            shadowColor, 0.035f,
+            shadowColor, primaryColor,
             pt.tangent * 0.12f - pt.normal * 0.12f
         };
-        drawCartographicGlyph(shadowPen, ch);
-
-        // Pass 2: Crisp Dark India Ink Lettering
-        MeshPen inkPen{
-            pt.pos, pt.tangent, pt.normal,
-            cw, letterHeight, baseStroke,
-            atlas, outVerts,
-            minChunkX, maxChunkX, minChunkZ, maxChunkZ,
-            primaryColor, 0.085f,
-            {0.0f, 0.0f}
-        };
-        drawCartographicGlyph(inkPen, ch);
+        drawCartographicGlyph(pen, ch);
+        outVerts.insert(outVerts.end(), glyphInkVerts.begin(), glyphInkVerts.end());
     }
 }
 

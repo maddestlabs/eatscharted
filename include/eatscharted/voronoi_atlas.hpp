@@ -5,6 +5,8 @@
 #include <vector>
 #include <string>
 #include <cstdint>
+#include <unordered_set>
+#include <unordered_map>
 
 namespace eatscharted {
 
@@ -56,6 +58,10 @@ struct RiverSegment {
     Vec2f p1{0.0f, 0.0f};
     float width0{1.2f};
     float width1{1.8f};
+    float minX{0.0f};
+    float minZ{0.0f};
+    float maxX{0.0f};
+    float maxZ{0.0f};
 };
 
 struct RoadSegment {
@@ -64,6 +70,10 @@ struct RoadSegment {
     float arcStart{0.0f};
     float arcEnd{1.0f};
     bool isRoyalHighway{true};  // true = double-cased ink highway, false = dashed trail
+    float minX{0.0f};
+    float minZ{0.0f};
+    float maxX{0.0f};
+    float maxZ{0.0f};
 };
 
 struct ChartPoi {
@@ -138,7 +148,7 @@ public:
         float worldX, float worldZ,
         float hC, float mC,
         float gradX, float gradZ,
-        float hOff, float mOff
+        float hOff = 0.0f, float mOff = 0.0f
     ) const noexcept;
 
     [[nodiscard]] float rawElevation(float wx, float wz) const noexcept { return rawElevationAt(wx, wz); }
@@ -182,6 +192,9 @@ public:
     void setPreset(AtlasPreset preset) noexcept { preset_ = preset; }
     void setSeed(uint32_t seed) noexcept { seed_ = seed; }
 
+    // Hydrologically traces a river from a high-altitude or spring source downhill to sea level
+    void traceHydrologicalRiver(Vec2f source, float startWidth = 1.0f, float terminalElevation = 0.02f, float maxReach = 380.0f);
+
     // Dynamically seeds and streams macro-blocks/chunks as the hero explores across the infinite map
     void ensureRegionBlocks(float centerWorldX, float centerWorldZ, float radius = 96.0f);
 
@@ -191,22 +204,26 @@ private:
     void generateMacroBlock(int bx, int bz);
     void addCurvedRoad(Vec2f a, Vec2f ctrl, Vec2f b, bool isHighway);
     void addWindingRiver(Vec2f start, Vec2f mid, Vec2f mouth, float startWidth, float endWidth);
+    void indexRiverSegment(uint32_t segIdx);
 
     [[nodiscard]] float rawElevationAt(float wx, float wz) const noexcept;
     [[nodiscard]] float rawMoistureAt(float wx, float wz) const noexcept;
+
+    static constexpr float kRiverSpatialCell = 32.0f;
 
     uint32_t seed_{1492u};
     AtlasPreset preset_{AtlasPreset::PerilousPeninsula};
     DungeonTheme dungeonTheme_{DungeonTheme::SunkenSanctum};
     std::vector<VoronoiRegionCell> cells_;
     std::vector<RiverSegment> rivers_;
+    std::unordered_map<uint64_t, std::vector<uint32_t>> riverSpatialGrid_;
     std::vector<RoadSegment> roads_;
     std::vector<ChartPoi> pois_;
     std::vector<CurvedMapBanner> banners_;
     std::vector<DungeonRoom> dungeonRooms_;
     std::vector<DungeonCorridor> dungeonCorridors_;
     std::vector<DungeonWaterPool> dungeonWaterPools_;
-    std::vector<uint64_t> generatedBlocks_;
+    std::unordered_set<uint64_t> generatedBlocks_;
 };
 
 } // namespace eatscharted

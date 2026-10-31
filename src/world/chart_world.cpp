@@ -288,6 +288,8 @@ void ChartWorld::addCustomStandee(Vec3f pos, float w, float h, uint16_t layer, u
     st.phaseOffset = std::fmod(std::abs(pos.x * 1.37f + pos.z * 2.19f), 6.28f);
     customStandees_.push_back(st);
     staticStandees_.push_back(st);
+    activeStandees_ = staticStandees_;
+    meshDirty_ = true;
 }
 
 void ChartWorld::addCustomBanner(const std::string& text, Vec2f p0, Vec2f p1, Vec2f p2, float letterSize) {
@@ -341,23 +343,23 @@ MapChunk ChartWorld::bakeChunk(int cx, int cz) {
     const float maxX = minX + kChunkSize;
     const float maxZ = minZ + kChunkSize;
 
-    voronoi_.ensureRegionBlocks(minX + 16.0f, minZ + 16.0f, 64.0f);
+    voronoi_.ensureRegionBlocks(minX + 16.0f, minZ + 16.0f, 128.0f);
 
     // 1. Terrain Mesh Generation (32x32 Quads with 1-ring halo for continuous C1 normals)
     constexpr int kGridN = 32;
     constexpr int kHaloDim = kGridN + 3; // 35 (-1 to 33)
-    std::vector<float> haloH(kHaloDim * kHaloDim);
-    std::vector<float> haloM(kHaloDim * kHaloDim);
+    const bool dungeonMode = voronoi_.isDungeonMode();
+    std::vector<float> haloH;
+    std::vector<float> haloM;
 
-    for (int lz = 0; lz < kHaloDim; ++lz) {
-        float wz = minZ + static_cast<float>(lz - 1) * 1.0f;
-        for (int lx = 0; lx < kHaloDim; ++lx) {
-            float wx = minX + static_cast<float>(lx - 1) * 1.0f;
-            size_t idx = static_cast<size_t>(lz) * kHaloDim + lx;
-            if (voronoi_.isDungeonMode()) {
-                haloH[idx] = voronoi_.sampleAt(wx, wz).elevation;
-                haloM[idx] = 0.5f;
-            } else {
+    if (!dungeonMode) {
+        haloH.resize(kHaloDim * kHaloDim);
+        haloM.resize(kHaloDim * kHaloDim);
+        for (int lz = 0; lz < kHaloDim; ++lz) {
+            float wz = minZ + static_cast<float>(lz - 1) * 1.0f;
+            for (int lx = 0; lx < kHaloDim; ++lx) {
+                float wx = minX + static_cast<float>(lx - 1) * 1.0f;
+                size_t idx = static_cast<size_t>(lz) * kHaloDim + lx;
                 haloH[idx] = voronoi_.rawElevation(wx, wz);
                 haloM[idx] = voronoi_.rawMoisture(wx, wz);
             }
@@ -371,7 +373,7 @@ MapChunk ChartWorld::bakeChunk(int cx, int cz) {
         for (int lx = 0; lx < kHaloDim; ++lx) {
             float wx = minX + static_cast<float>(lx - 1) * 1.0f;
             size_t hIdx = static_cast<size_t>(lz) * kHaloDim + lx;
-            if (voronoi_.isDungeonMode()) {
+            if (dungeonMode) {
                 samples[hIdx] = voronoi_.sampleAt(wx, wz);
             } else {
                 float hC = haloH[hIdx];
@@ -387,13 +389,7 @@ MapChunk ChartWorld::bakeChunk(int cx, int cz) {
                 float gradZ = (haloH[static_cast<size_t>(lzU) * kHaloDim + lx] -
                                haloH[static_cast<size_t>(lzD) * kHaloDim + lx]) * 0.5f;
 
-                int lxOff = std::min(kHaloDim - 1, lx + 2);
-                int lzOff = std::max(0, lz - 2);
-                size_t offIdx = static_cast<size_t>(lzOff) * kHaloDim + lxOff;
-                float hOff = haloH[offIdx];
-                float mOff = haloM[offIdx];
-
-                samples[hIdx] = voronoi_.sampleAtKnown(wx, wz, hC, mC, gradX, gradZ, hOff, mOff);
+                samples[hIdx] = voronoi_.sampleAtKnown(wx, wz, hC, mC, gradX, gradZ);
             }
         }
     }
@@ -437,13 +433,22 @@ MapChunk ChartWorld::bakeChunk(int cx, int cz) {
         return v;
     };
 
+    // Precompute the 33x33 unique grid vertices once instead of recomputing 4x per quad
+    constexpr int kVertDim = kGridN + 1;
+    std::vector<ChartVertex> gridVerts(kVertDim * kVertDim);
+    for (int gz = 0; gz < kVertDim; ++gz) {
+        for (int gx = 0; gx < kVertDim; ++gx) {
+            gridVerts[static_cast<size_t>(gz) * kVertDim + gx] = makeVertex(gx, gz);
+        }
+    }
+
     ch.terrainVerts.reserve(kGridN * kGridN * 6);
     for (int gz = 0; gz < kGridN; ++gz) {
         for (int gx = 0; gx < kGridN; ++gx) {
-            ChartVertex v00 = makeVertex(gx,     gz);
-            ChartVertex v10 = makeVertex(gx + 1, gz);
-            ChartVertex v11 = makeVertex(gx + 1, gz + 1);
-            ChartVertex v01 = makeVertex(gx,     gz + 1);
+            const ChartVertex& v00 = gridVerts[static_cast<size_t>(gz) * kVertDim + gx];
+            const ChartVertex& v10 = gridVerts[static_cast<size_t>(gz) * kVertDim + (gx + 1)];
+            const ChartVertex& v11 = gridVerts[static_cast<size_t>(gz + 1) * kVertDim + (gx + 1)];
+            const ChartVertex& v01 = gridVerts[static_cast<size_t>(gz + 1) * kVertDim + gx];
 
             ch.terrainVerts.push_back(v00);
             ch.terrainVerts.push_back(v01);
@@ -634,6 +639,40 @@ MapChunk ChartWorld::bakeChunk(int cx, int cz) {
         int minLatticeZ = static_cast<int>(std::floor(minZ / 4.0f)) * 4;
         int maxLatticeZ = static_cast<int>(std::ceil(maxZ / 4.0f)) * 4;
 
+        // Helper to interpolate precomputed chunk halo samples at (wx, wz) in [minX, maxX) x [minZ, maxZ)
+        auto samplePrecomputedGrid = [&](float wx, float wz, float& outMoisture) noexcept -> ChartFieldSample {
+            float fx = std::clamp(wx - minX, 0.0f, static_cast<float>(kGridN));
+            float fz = std::clamp(wz - minZ, 0.0f, static_cast<float>(kGridN));
+            int ix = std::clamp(static_cast<int>(fx), 0, kGridN - 1);
+            int iz = std::clamp(static_cast<int>(fz), 0, kGridN - 1);
+            float tx = fx - static_cast<float>(ix);
+            float tz = fz - static_cast<float>(iz);
+
+            int lx0 = ix + 1;
+            int lz0 = iz + 1;
+            int lxN = (tx < 0.5f) ? lx0 : (lx0 + 1);
+            int lzN = (tz < 0.5f) ? lz0 : (lz0 + 1);
+
+            size_t i00 = static_cast<size_t>(lz0) * kHaloDim + lx0;
+            size_t i10 = static_cast<size_t>(lz0) * kHaloDim + (lx0 + 1);
+            size_t i01 = static_cast<size_t>(lz0 + 1) * kHaloDim + lx0;
+            size_t i11 = static_cast<size_t>(lz0 + 1) * kHaloDim + (lx0 + 1);
+            size_t iNear = static_cast<size_t>(lzN) * kHaloDim + lxN;
+
+            ChartFieldSample s = samples[iNear];
+            auto bilerp = [&](float v00, float v10, float v01, float v11) noexcept {
+                float a = v00 + (v10 - v00) * tx;
+                float b = v01 + (v11 - v01) * tx;
+                return a + (b - a) * tz;
+            };
+            s.elevation = bilerp(samples[i00].elevation, samples[i10].elevation, samples[i01].elevation, samples[i11].elevation);
+            s.sdfCoast  = bilerp(samples[i00].sdfCoast,  samples[i10].sdfCoast,  samples[i01].sdfCoast,  samples[i11].sdfCoast);
+            s.sdfRoad   = bilerp(samples[i00].sdfRoad,   samples[i10].sdfRoad,   samples[i01].sdfRoad,   samples[i11].sdfRoad);
+            s.sdfRiver  = bilerp(samples[i00].sdfRiver,  samples[i10].sdfRiver,  samples[i01].sdfRiver,  samples[i11].sdfRiver);
+            outMoisture = bilerp(haloM[i00], haloM[i10], haloM[i01], haloM[i11]);
+            return s;
+        };
+
         for (int gz = minLatticeZ; gz < maxLatticeZ; gz += 4) {
             for (int gx = minLatticeX; gx < maxLatticeX; gx += 4) {
                 uint32_t h = hashPos(gx, gz, seed);
@@ -644,7 +683,23 @@ MapChunk ChartWorld::bakeChunk(int cx, int cz) {
 
                 if (wx < minX || wx >= maxX || wz < minZ || wz >= maxZ) continue;
 
-                ChartFieldSample s = voronoi_.sampleAt(wx, wz);
+                float localMoisture = 0.5f;
+                ChartFieldSample s = samplePrecomputedGrid(wx, wz, localMoisture);
+
+                // Sorcery!-style hand-inked waypoint pennant flags along the road verge
+                if (s.sdfRoad >= 1.2f && s.sdfRoad <= 2.3f && (h % 31u == 0u) && s.sdfRiver > s.riverWidth + 2.0f &&
+                    s.sdfCoast > 2.5f && s.elevation > 0.4f && (s.flags & ChartFlags::IsSettlement) == 0u) {
+                    uint32_t flipFlag = ((h >> 16u) & 1u) ? StandeeFlags::FlipX : 0u;
+                    StandeeInstance sign{};
+                    sign.worldPos[0] = wx; sign.worldPos[1] = s.elevation; sign.worldPos[2] = wz;
+                    sign.width = 1.8f; sign.height = 2.2f;
+                    sign.texLayer = InkLayer::StandeeSignpost;
+                    sign.flags = StandeeFlags::WindSway | StandeeFlags::PopUpTilt | flipFlag;
+                    sign.phaseOffset = std::fmod(std::abs(wx * 1.51f + wz * 2.37f), 6.28f);
+                    ch.standees.push_back(sign);
+                    continue;
+                }
+
                 if (s.sdfRoad < 2.4f || s.sdfRiver < s.riverWidth + 1.2f || (s.flags & ChartFlags::IsSettlement) != 0u) {
                     continue;
                 }
@@ -731,7 +786,6 @@ MapChunk ChartWorld::bakeChunk(int cx, int cz) {
                     st.phaseOffset = std::fmod(std::abs(wx * 1.37f + wz * 2.19f), 6.28f);
                     ch.standees.push_back(st);
                 } else if (s.biomePrimary == BiomeId::AridSteppe) {
-                    float localMoisture = voronoi_.rawMoisture(wx, wz);
                     if (localMoisture > 0.35f && (h % 3u == 0u)) {
                         // Oasis date palms swaying above the emerald pool
                         StandeeInstance st{};
@@ -845,6 +899,9 @@ void ChartWorld::assembleActiveMesh() {
 
     // Append script-added custom standees
     staticStandees_.insert(staticStandees_.end(), customStandees_.begin(), customStandees_.end());
+    activeStandees_.clear();
+    activeStandees_.reserve(staticStandees_.size() + 32);
+    activeStandees_.insert(activeStandees_.end(), staticStandees_.begin(), staticStandees_.end());
 
     // Prune distant chunks if cache grows large
     if (chunkCache_.size() > 100) {
@@ -1097,7 +1154,9 @@ void ChartWorld::moveHero(float moveX, float moveZ, bool sprintOrDodge, float dt
         nextX = std::clamp(nextX, -68.0f, 68.0f);
         nextZ = std::clamp(nextZ, -68.0f, 88.0f);
     }
-    ChartFieldSample s = voronoi_.sampleAt(nextX, nextZ);
+    ChartFieldSample s = (nextX == hero_.pos.x && nextZ == hero_.pos.z)
+        ? currentSample
+        : voronoi_.sampleAt(nextX, nextZ);
 
     if (voronoi_.isDungeonMode()) {
         // Collide against hatched One-Page Dungeon walls with comfortable boundary padding
@@ -1124,7 +1183,9 @@ void ChartWorld::moveHero(float moveX, float moveZ, bool sprintOrDodge, float dt
     const ChartPoi* nearestPoi = nullptr;
     for (const auto& p : voronoi_.pois()) {
         float dx = hero_.pos.x - p.pos.x;
+        if (std::abs(dx) >= bestPoiDist) continue;
         float dz = hero_.pos.z - p.pos.y;
+        if (std::abs(dz) >= bestPoiDist) continue;
         float d = std::sqrt(dx * dx + dz * dz);
         if (d < bestPoiDist) {
             bestPoiDist = d;
@@ -1140,16 +1201,34 @@ void ChartWorld::moveHero(float moveX, float moveZ, bool sprintOrDodge, float dt
     } else if (voronoi_.preset() == AtlasPreset::ContinentalPangaea) {
         std::string provName = "THE IMPERIAL CROSSROADS";
         std::string provSub  = "Heart of Pangaea";
-        if (hero_.pos.z > 35.0f) {
+        float rHeroSq = hero_.pos.x * hero_.pos.x + hero_.pos.z * hero_.pos.z;
+        if (rHeroSq > 250.0f * 250.0f) {
+            if ((s.flags & ChartFlags::IsWater) != 0u) {
+                provName = "THE BOUNDLESS OCEAN";
+                provSub  = "Uncharted Waters";
+            } else {
+                BiomeId b = s.biomePrimary;
+                if (b == BiomeId::AlpinePeak || b == BiomeId::TaigaPines) {
+                    provName = "THE NORTHERN WILDERNESS";
+                    provSub  = "Untamed Frontier";
+                } else if (b == BiomeId::AridSteppe || b == BiomeId::BadlandsCanyon) {
+                    provName = "THE OUTER DESERT";
+                    provSub  = "Endless Dunes";
+                } else {
+                    provName = "THE OVERLAND FRONTIER";
+                    provSub  = "Uncharted Lands";
+                }
+            }
+        } else if (hero_.pos.z > 85.0f) {
             provName = "THE REALM OF SILVERVALE";
             provSub  = "Highland Mountains";
-        } else if (hero_.pos.x > 35.0f) {
+        } else if (hero_.pos.x > 85.0f) {
             provName = "THE SUNSCORCHED EXPANSE";
             provSub  = "Arid Wastes";
-        } else if (hero_.pos.x < -35.0f) {
+        } else if (hero_.pos.x < -85.0f) {
             provName = "KILDLAND";
             provSub  = "The Perilous Shores";
-        } else if (hero_.pos.z < -35.0f) {
+        } else if (hero_.pos.z < -85.0f) {
             provName = "THE SHATTERED SEA";
             provSub  = "Corsair's Atoll";
         }
@@ -1265,16 +1344,16 @@ bool ChartWorld::tryToggleNearbyDungeon() {
                 hero_.activeRegionSub  = "Sunscorched Wastes";
                 break;
             case AtlasPreset::ContinentalPangaea:
-                if (retPos.z > 35.0f) {
+                if (retPos.z > 85.0f) {
                     hero_.activeRegionName = "THE REALM OF SILVERVALE";
                     hero_.activeRegionSub  = "Highland Mountains";
-                } else if (retPos.x > 35.0f) {
+                } else if (retPos.x > 85.0f) {
                     hero_.activeRegionName = "THE SUNSCORCHED EXPANSE";
                     hero_.activeRegionSub  = "Arid Wastes";
-                } else if (retPos.x < -35.0f) {
+                } else if (retPos.x < -85.0f) {
                     hero_.activeRegionName = "KILDLAND";
                     hero_.activeRegionSub  = "The Perilous Shores";
-                } else if (retPos.z < -35.0f) {
+                } else if (retPos.z < -85.0f) {
                     hero_.activeRegionName = "THE SHATTERED SEA";
                     hero_.activeRegionSub  = "Corsair's Atoll";
                 } else {
@@ -1308,26 +1387,14 @@ bool ChartWorld::tryToggleNearbyDungeon() {
 }
 
 void ChartWorld::buildDynamicStandeesAndTelegraphs() {
-    activeStandees_.clear();
-    activeStandees_.reserve(staticStandees_.size() + 32);
-    activeStandees_.insert(activeStandees_.end(), staticStandees_.begin(), staticStandees_.end());
+    if (activeStandees_.size() < staticStandees_.size()) {
+        activeStandees_ = staticStandees_;
+    } else {
+        activeStandees_.resize(staticStandees_.size());
+    }
     activeTelegraphs_.clear();
 
-    // 1. Quest / Portal Beacon ring on the parchment around nearby Dungeon Portals
-    for (const auto& p : voronoi_.pois()) {
-        if (p.category == PoiCategory::DungeonPortal || p.category == PoiCategory::BossLair) {
-            CombatTelegraph q{};
-            q.center[0] = p.pos.x;
-            q.center[1] = p.elevation;
-            q.center[2] = p.pos.y;
-            q.radius    = 2.8f;
-            q.progress  = 0.5f + 0.5f * std::sin(simTimeSec_ * 2.5f);
-            q.telegraphType = TelegraphType::QuestBeacon;
-            activeTelegraphs_.push_back(q);
-        }
-    }
-
-    // 2. Player Arcane Spell Telegraph Ring (Cat Quest Astropaw / Flamepurr nova)
+    // 1. Player Arcane Spell Telegraph Ring (Cat Quest Astropaw / Flamepurr nova)
     if (hero_.spellTimer > 0.0f) {
         CombatTelegraph sp{};
         sp.center[0] = hero_.pos.x;
@@ -1339,7 +1406,7 @@ void ChartWorld::buildDynamicStandeesAndTelegraphs() {
         activeTelegraphs_.push_back(sp);
     }
 
-    // 3. Hero Standee (Armored Cat Adventurer on land with hopping animation, Inked Caravel Ship at sea!)
+    // 2. Hero Standee (Armored Cat Adventurer on land with hopping animation, Inked Caravel Ship at sea!)
     StandeeInstance heroSt{};
     heroSt.worldPos[0] = hero_.pos.x;
     heroSt.worldPos[2] = hero_.pos.z;
@@ -1368,7 +1435,7 @@ void ChartWorld::buildDynamicStandeesAndTelegraphs() {
     }
     activeStandees_.push_back(heroSt);
 
-    // 4. Floating Companion Spirit Standee
+    // 3. Floating Companion Spirit Standee
     StandeeInstance compSt{};
     compSt.worldPos[0] = hero_.pos.x - (hero_.facingRight ? 1.5f : -1.5f);
     compSt.worldPos[1] = hero_.pos.y + (hero_.isSailing ? 1.4f : 0.8f) + std::sin(simTimeSec_ * 3.2f) * 0.22f;
@@ -1380,7 +1447,7 @@ void ChartWorld::buildDynamicStandeesAndTelegraphs() {
     compSt.phaseOffset = simTimeSec_;
     activeStandees_.push_back(compSt);
 
-    // 5. Active Melee Slash Crescent
+    // 4. Active Melee Slash Crescent
     if (hero_.attackTimer > 0.0f) {
         StandeeInstance slashSt{};
         slashSt.worldPos[0] = hero_.pos.x + hero_.facingDir.x * 1.9f;
@@ -1393,7 +1460,7 @@ void ChartWorld::buildDynamicStandeesAndTelegraphs() {
         activeStandees_.push_back(slashSt);
     }
 
-    // 6. Live Enemies & their Ground-Projected Combat Telegraphs
+    // 5. Live Enemies & their Ground-Projected Combat Telegraphs (prioritized before ambient beacons)
     for (const auto& en : enemies_) {
         if (!en.alive) continue;
         StandeeInstance es{};
@@ -1408,7 +1475,7 @@ void ChartWorld::buildDynamicStandeesAndTelegraphs() {
         es.phaseOffset = en.pos.x + en.pos.z;
         activeStandees_.push_back(es);
 
-        if (en.telegraphProgress > 0.01f) {
+        if (en.telegraphProgress > 0.01f && activeTelegraphs_.size() < 64) {
             CombatTelegraph ct{};
             ct.center[0] = en.pos.x;
             ct.center[1] = en.pos.y;
@@ -1425,9 +1492,30 @@ void ChartWorld::buildDynamicStandeesAndTelegraphs() {
         }
     }
 
-    // 7. Active Point Lights: Chunk lights + Custom lights + Hero Torchlight / Lantern
-    pointLights_ = staticChunkLights_;
-    pointLights_.insert(pointLights_.end(), customPointLights_.begin(), customPointLights_.end());
+    // 6. Quest / Portal Beacon ring on the parchment around nearby Dungeon Portals (distance-culled)
+    constexpr float kMaxBeaconDistSq = 95.0f * 95.0f;
+    float beaconProgress = 0.5f + 0.5f * std::sin(simTimeSec_ * 2.5f);
+    for (const auto& p : voronoi_.pois()) {
+        if (activeTelegraphs_.size() >= 64) break;
+        if (p.category == PoiCategory::DungeonPortal || p.category == PoiCategory::BossLair) {
+            float dx = p.pos.x - hero_.pos.x;
+            float dz = p.pos.y - hero_.pos.z;
+            if (dx * dx + dz * dz > kMaxBeaconDistSq) continue;
+
+            CombatTelegraph q{};
+            q.center[0] = p.pos.x;
+            q.center[1] = p.elevation;
+            q.center[2] = p.pos.y;
+            q.radius    = 2.8f;
+            q.progress  = beaconProgress;
+            q.telegraphType = TelegraphType::QuestBeacon;
+            activeTelegraphs_.push_back(q);
+        }
+    }
+
+    // 7. Active Point Lights: Hero Torchlight prioritized first, followed by nearby Chunk + Custom lights
+    pointLights_.clear();
+    pointLights_.reserve(64);
 
     PointLight heroTorch{};
     heroTorch.position[0] = hero_.pos.x;
@@ -1439,8 +1527,15 @@ void ChartWorld::buildDynamicStandeesAndTelegraphs() {
     heroTorch.color[2]    = 0.38f;
     float flicker = 1.0f + 0.07f * std::sin(simTimeSec_ * 7.5f) + 0.04f * std::sin(simTimeSec_ * 13.1f);
     heroTorch.intensity   = 1.45f * flicker;
-    if (pointLights_.size() < 64) {
-        pointLights_.push_back(heroTorch);
+    pointLights_.push_back(heroTorch);
+
+    for (const auto& pl : customPointLights_) {
+        if (pointLights_.size() >= 64) break;
+        pointLights_.push_back(pl);
+    }
+    for (const auto& pl : staticChunkLights_) {
+        if (pointLights_.size() >= 64) break;
+        pointLights_.push_back(pl);
     }
 }
 
@@ -1470,6 +1565,21 @@ void ChartWorld::updateSimulation(float dt, uint32_t viewportW, uint32_t viewpor
             }
         }
     }
+
+    // Prune dead enemies and far-off non-boss wilderness enemies so the 24-enemy cap never locks out new spawns
+    const bool inDungeon = voronoi_.isDungeonMode();
+    enemies_.erase(
+        std::remove_if(enemies_.begin(), enemies_.end(), [&](const EnemyAgent& en) {
+            if (!en.alive) return true;
+            if (!inDungeon && !en.isBoss) {
+                float dx = hero_.pos.x - en.pos.x;
+                float dz = hero_.pos.z - en.pos.z;
+                if (dx * dx + dz * dz > 160.0f * 160.0f) return true;
+            }
+            return false;
+        }),
+        enemies_.end()
+    );
 
     // Update enemy AI & Cat Quest style ground telegraph attacks
     for (auto& en : enemies_) {

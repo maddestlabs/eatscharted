@@ -133,19 +133,110 @@
 
 ---
 
-## Phase 6: Build & Verification Checklist (Strict Manual User Testing)
+## Phase 7: Core Scale Expansion (~2.4x) & Infinite Procedural Multi-Biome Continuum
 
-> ⚠️ **CRITICAL POLICY:** Do NOT run automated tests (`eatscharted_tests.exe`, `ctest`, etc.) or launch background GPU processes. All verification is performed manually by the user.
+- [x] **7.1 Expanded Continental Geography & Spatial Breathing Room**
+  - Expanded province centers from $\sim 75\text{m}$ to $\sim 190\text{m}$:
+    - **Silvervale Highlands:** `(0.0f, 190.0f)`, Highguard Keep at `(0.0f, 195.0f)`
+    - **The Sunscorched Expanse:** `(190.0f, 0.0f)`, Al-Zahra Oasis at `(180.0f, -10.0f)`
+    - **Kildland & Perilous Shores:** `(-190.0f, 0.0f)`, Lowmillburg Citadel at `(-175.0f, -10.0f)`
+    - **The Shattered Sea:** `(0.0f, -190.0f)`, Corsair's Haven Atoll at `(0.0f, -190.0f)`
+    - **The Imperial Crossroads:** Central hub at `(0.0f, 0.0f)`
+  - Scaled blend standard deviations to $\sigma_{\text{prov}} = 110\text{m}$ and $\sigma_{\text{center}} = 75\text{m}$.
+  - Scaled feature frequencies ($kCoordScale = 0.42$) so mountains, valleys, dunes, and bays expand smoothly across $\sim 400\text{m}$ of core terrain.
+  - Extended all royal highway splines, wilderness trails, and meandering river networks to span the enlarged geography.
 
-- [x] **6.1 Compilation Verification**
-  - Compiled successfully via `build.ps1 -NoRun -NoLaunch`:
-    - Zero compiler errors, zero linker warnings.
-    - Binary verified: `build/Release/eatscharted.exe`.
+- [x] **7.2 Infinite Procedural Multi-Biome Continuum (Replacing the Ocean Drop-Off)**
+  - Replaced the hard artificial ocean clamping (`if (rOrigin > 112m) h = -3.6m`) with an infinite procedural terrain and climate field:
+    - **Macro Continental Landmass Field:** FBM tectonic noise ($C(wx, wz)$) providing balanced distribution of continental landmasses (~65%) and maritime oceans/straits (~35%).
+    - **Procedural Topography:** Mountain ranges along tectonic ridges, rolling wilderness hills, and coastal shelves.
+    - **Continental Climate & Moisture Gradient:** Latitudinal temperature trends and rainfall patterns driving biomes outward infinitely.
+    - **Seamless $C^1$ Hermite Transition:** At $R \le 210\text{m}$, the handcrafted core continent dominates; between $210\text{m}$ and $280\text{m}$, it smoothly blends into the infinite procedural multi-biome continuum.
 
-- [ ] **6.2 User Manual Experience Test Items (For User Manual Testing)**
-  - [ ] **Hero Spawn:** Run `.\build\Release\eatscharted.exe --script scenes/continental_overworld.eats` (or launch via debugger/IDE). Hero spawns at the Imperial Crossroads `(0, 0)` with the central banner.
-  - [ ] **Northbound Journey:** Walk north along Highway 1 $\rightarrow$ observe ascent into the Highland Kingdom; taiga pines and crag outcrops appear; Highguard Keep looms over the river valley.
-  - [ ] **Eastbound Journey:** Walk east along Highway 2 $\rightarrow$ cross the mountain rain-shadow into the Sunscorched Wastes; sand dunes, sandstone buttes, and Al-Zahra Oasis date palms emerge.
-  - [ ] **Westbound Journey:** Walk west along Highway 2 $\rightarrow$ enter Kildland; rolling green pastures, windmills, and Lowmillburg Castle appear.
-  - [ ] **Southbound Journey:** Walk south along Highway 1 $\rightarrow$ reach the southern cape; step into the waters of the Shattered Sea to board the ship and sail among Corsair Atoll and sea stacks.
-  - [ ] **Calligraphy Banners & Region Toasts:** Grand banners curve above each province; toast ribbons announce discovery when entering each territory.
+- [x] **7.3 Dynamic Outward Macro-Block Streaming & Discovery**
+  - In `VoronoiAtlas::generateMacroBlock(bx, bz)`:
+    - Automatically streams new content as the player ventures into outward chunks beyond the core continent ($|bx| > 2$ or $|bz| > 2$).
+    - On land: classifies local biome, places contextual POIs (Hermitages, Monasteries, Delves, Timber Hamlets, Garrisons, Monoliths, Flour Mills), connects road links to existing highways, and arches regional banners (e.g. `"THE JADE WILDS"`, `"IRON RIDGE"`).
+    - On water: places sunken ruins, lighthouses, or deep leviathan lairs in shallow seas; arches oceanic title banners across the deep abyss.
+    - Dynamically detects transitions into the procedural frontier in `ChartWorld::moveHero` with new frontier banners and toasts.
+
+---
+
+## Phase 8: Engine Performance & Architecture Audit Optimizations
+
+- [x] **8.1 Procedural Noise Early-Outs & Province Weight Gating (`VoronoiAtlas`)**
+  - File: [`src/procgen/voronoi_atlas.cpp`](file:///c:/git/eatscharted/src/procgen/voronoi_atlas.cpp)
+  - Early-out `hProc` when `rOrigin <= 210.0f` and early-out `hCore` when `rOrigin >= 280.0f` in `rawElevationContinental` and `rawMoistureContinental`.
+  - Gate individual core province evaluations (`hHighlands`, `hDesert`, `hPeninsula`, `hArchipelago`, `hCenter`) behind `w > 1e-3f` to skip zero-weight multi-octave FBM evaluations.
+
+- [x] **8.2 Eliminate Dead Field Evaluations (`hOff` / `mOff`) & Redundant `sampleAt` Calls**
+  - Files: [`include/eatscharted/voronoi_atlas.hpp`](file:///c:/git/eatscharted/include/eatscharted/voronoi_atlas.hpp), [`src/procgen/voronoi_atlas.cpp`](file:///c:/git/eatscharted/src/procgen/voronoi_atlas.cpp), [`src/world/chart_world.cpp`](file:///c:/git/eatscharted/src/world/chart_world.cpp), [`src/procgen/cartographic_text.cpp`](file:///c:/git/eatscharted/src/procgen/cartographic_text.cpp)
+  - Remove unused `hOff` and `mOff` evaluations from `VoronoiAtlas::sampleAt`, `VoronoiAtlas::sampleAtKnown`, and `ChartWorld::bakeChunk`.
+  - Skip the unused `haloH`/`haloM` pre-pass in `ChartWorld::bakeChunk` when `voronoi_.isDungeonMode()` is active, and reuse the precomputed `samples` grid for nature standee placement.
+  - In `CartographicPathText::emitTextAlongPath`, add coarse glyph-level AABB chunk culling and combine shadow + ink stroke emission into a single pass to halve `atlas.sampleAt` calls.
+
+- [x] **8.3 Per-Frame CPU I/O, Standee Upload & Hero Sampling Optimizations**
+  - Files: [`src/render/chart_renderer.cpp`](file:///c:/git/eatscharted/src/render/chart_renderer.cpp), [`src/world/chart_world.cpp`](file:///c:/git/eatscharted/src/world/chart_world.cpp), [`include/eatscharted/chart_world.hpp`](file:///c:/git/eatscharted/include/eatscharted/chart_world.hpp)
+  - Throttle desktop script hot-reload filesystem polling (`std::filesystem::exists` / `last_write_time`) in `renderSingleFrame` to once every `0.5s`.
+  - Split static and dynamic standee uploads in `uploadWorldAndDynamicEntities` so only the dynamic tail slice of `spriteBuffer` is written per frame when `!rebuildStaticWorldVerts`.
+  - Eliminate redundant `voronoi_.sampleAt` calls in `ChartWorld::moveHero` when stationary and during frontier locale checks.
+
+- [x] **8.4 Infinite World Culling, Spatial AABBs & Buffer Starvation Fixes**
+  - Files: [`include/eatscharted/voronoi_atlas.hpp`](file:///c:/git/eatscharted/include/eatscharted/voronoi_atlas.hpp), [`src/procgen/voronoi_atlas.cpp`](file:///c:/git/eatscharted/src/procgen/voronoi_atlas.cpp), [`src/world/chart_world.cpp`](file:///c:/git/eatscharted/src/world/chart_world.cpp)
+  - Change `VoronoiAtlas::generatedBlocks_` to `std::unordered_set<uint64_t>` and add precomputed AABB bounding boxes to `RiverSegment` and `RoadSegment` for fast spatial rejection in `sampleAtKnown`.
+  - Distance-cull `QuestBeacon` telegraphs and prioritize combat telegraphs in `buildDynamicStandeesAndTelegraphs` so distant portals do not fill the 64-slot GPU telegraph buffer and starve local combat telegraphs.
+  - Prioritize `heroTorch` in `buildDynamicStandeesAndTelegraphs` so the 64-slot point light buffer never drops the hero's light.
+  - Prune dead and far-off wilderness enemies in `ChartWorld::updateSimulation` so the 24-enemy cap does not permanently lock out new enemy spawns.
+
+- [x] **8.5 GPU Vertex Deduplication & Shader / Export Optimizations (`ChartRenderer`)**
+  - Files: [`src/world/chart_world.cpp`](file:///c:/git/eatscharted/src/world/chart_world.cpp), [`src/render/chart_renderer.cpp`](file:///c:/git/eatscharted/src/render/chart_renderer.cpp)
+  - Precompute the `33x33` unique `ChartVertex` grid corners in `ChartWorld::bakeChunk` instead of recomputing `makeVertex` 4 times per quad corner.
+  - Gate overworld `macroNoise`, `mediumNoise`, and `fineGrain` FBM evaluations and Fog-of-War blending in `fs_world` so Dungeon Mode and fully charted chunks skip unused procedural math.
+  - Move the 4-tap cross edge-AA filter in `fs_post` into the `else` branch of `if (coc > 0.30)` to avoid 4 redundant taps and unblurred dilution in bokeh regions.
+  - Replace bit-by-bit `computeCrc32` in `ChartRenderer::writePngFile` with a `constexpr` 256-entry lookup table.
+
+- [x] **8.6 Audio Thread Safety (`AudioFoleyEngine`)**
+  - Files: [`include/eatscharted/audio_foley.hpp`](file:///c:/git/eatscharted/include/eatscharted/audio_foley.hpp), [`src/audio/audio_foley.cpp`](file:///c:/git/eatscharted/src/audio/audio_foley.cpp)
+  - Synchronize voice state access between `AudioFoleyEngine::triggerSound` (main thread) and `AudioFoleyEngine::mixSamples` (audio callback thread) to eliminate C++ data races.
+
+---
+
+## Phase 9: Living Hydrology & Cartographic River System
+
+- [x] **9.1 Hydrological Downhill Tracer & Logical Sources/Sinks**
+  - Files: [`include/eatscharted/voronoi_atlas.hpp`](file:///c:/git/eatscharted/include/eatscharted/voronoi_atlas.hpp), [`src/procgen/voronoi_atlas.cpp`](file:///c:/git/eatscharted/src/procgen/voronoi_atlas.cpp)
+  - Implemented `VoronoiAtlas::traceHydrologicalRiver(Vec2f source, float startWidth, float terminalElevation, float maxReach)`:
+    - Downhill routing following continuous heightfield gradient $-\nabla h(x, z)$ with momentum/inertia smoothing.
+    - Sinuosity and meander modulation based on slope steepness (straight in mountains, meandering in floodplains).
+    - Leopold-Maddock hydraulic channel width scaling: $w(d) = w_0 + k \sqrt{d}$.
+    - Natural ocean/sea termination ($h \le 0.02\text{m}$) with estuary delta mouth flaring.
+  - Logical sources: alpine cirques / glacial melt peaks ($h > 3.5\text{m}$) and mid-elevation karst aquifer springs ($h > 1.8\text{m}$, $m > 0.62$).
+  - Core continent rivers connected to drain to the open sea and supplemented with northern alpine melt tributaries.
+
+- [x] **9.2 Spatial Grid Partitioning for O(1) Chunk River Lookups**
+  - Files: [`include/eatscharted/voronoi_atlas.hpp`](file:///c:/git/eatscharted/include/eatscharted/voronoi_atlas.hpp), [`src/procgen/voronoi_atlas.cpp`](file:///c:/git/eatscharted/src/procgen/voronoi_atlas.cpp), [`src/world/chart_world.cpp`](file:///c:/git/eatscharted/src/world/chart_world.cpp)
+  - Implemented `riverSpatialGrid_` (32m cell buckets) indexing segment bounding boxes upon creation.
+  - Replaced $O(N)$ linear segment checks in `sampleAtKnown` with $O(1)$ spatial bucket lookups.
+  - Increased macroblock lookahead in `ChartWorld::generateChunk` (`ensureRegionBlocks`) to 128m to guarantee upstream mountain sources are deterministically traced across chunk boundaries.
+
+- [x] **9.3 Cartographic River Shading: Depth Fading, Shelf Inking & Directional Flow**
+  - File: [`src/render/chart_renderer.cpp`](file:///c:/git/eatscharted/src/render/chart_renderer.cpp)
+  - Replaced flat river fill with multi-tiered nautical depth banding (`riverShoal` $\to$ `riverMid` $\to$ `riverDeep`) driven by normalized depth $\text{clamp}(-\text{sdfRiver} / w, 0, 1)$.
+  - Inked vector shelf contour lines along internal depth boundaries mirroring oceanic shelf styling.
+  - Riverbank wet silt, clay, and pebble margins darkening soil at water borders.
+  - Directional downhill flow currents calculated from $-\nabla h$ (`-gradXZ`), rendering traveling current ripples, elongated foam streaks, and cartographic flow chevrons pointing downstream.
+  - Downstream normal perturbation aligned with current vector.
+
+---
+
+## Phase 10: Web & Mobile Aspect Ratio Preservation
+
+- [x] **10.1 Responsive 16:9 Canvas Viewport & Container Fitting**
+  - File: [`web/index.html`](file:///c:/git/eatscharted/web/index.html)
+  - Replaced stretching `width: 100%; height: 100%` on `canvas#canvas` with dynamic aspect-ratio constrained sizing:
+    - CSS: `aspect-ratio: 16 / 9; max-width: calc(100vh * (16 / 9)); max-height: 100vh;` with `@supports` for dynamic viewport `100dvh` on mobile browsers.
+    - JS: Implemented `fitCanvasAspectRatio()` calculating exact integer letterbox/pillarbox pixel dimensions fitted within `#canvas-container` without any stretching or warping.
+    - Attached resize handlers to `window.resize`, `orientationchange`, and `window.visualViewport.resize`.
+    - Added letterbox click-focus forwarder on `#canvas-container` so clicking outside the 16:9 canvas maintains keyboard and mouse focus.
+
+

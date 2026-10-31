@@ -37,6 +37,7 @@ WGPUDevice emscripten_webgpu_get_device(void);
 #include <fstream>
 #include <filesystem>
 #include <vector>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <algorithm>
@@ -202,7 +203,8 @@ fn vs_shadow_sprite(@builtin(vertex_index) vertexIndex : u32) -> StandeeShadowOu
     let cornerIdx = vertexIndex % 6u;
     let sp = standees[spriteIdx];
 
-    let basePos = applyHorizonCurve(sp.posAndWidth.xyz);
+    let rawFoot = sp.posAndWidth.xyz;
+    let basePos = applyHorizonCurve(rawFoot);
     let width   = sp.posAndWidth.w;
     let height  = sp.sizeAndMeta.x;
     let layer   = bitcast<u32>(sp.sizeAndMeta.y);
@@ -238,14 +240,29 @@ fn vs_shadow_sprite(@builtin(vertex_index) vertexIndex : u32) -> StandeeShadowOu
     var swayX = 0.0;
     var bobY  = 0.0;
     if ((flags & 2u) != 0u) {
-        swayX = sin(time * 1.7 + phase) * 0.11 * c.y;
+        // Match vs_sprite wind breeze wave across foliage & grass
+        let windWave = sin(time * 1.85 + rawFoot.x * 0.22 + rawFoot.z * 0.18 + phase);
+        swayX = windWave * 0.12 * (c.y * c.y);
     }
     if ((flags & 4u) != 0u) {
-        bobY = abs(sin(time * 2.8 + phase)) * 0.07 * c.y;
+        bobY = abs(sin(time * 2.8 + phase)) * 0.08 * c.y;
+    }
+    if ((flags & 16u) != 0u) {
+        let toStandee = rawFoot.xz - u.heroPos.xz;
+        let distH = length(toStandee);
+        if (distH < 4.2 && rawFoot.z < u.heroPos.z + 0.5) {
+            let pushDir = select(-1.0, 1.0, toStandee.x >= 0.0);
+            swayX += pushDir * (1.0 - distH / 4.2) * 0.65 * c.y;
+        }
     }
 
     let rightVec = normalize(vec3<f32>(u.camBasisX.x, 0.0, u.camBasisX.z));
-    let worldPos = basePos + rightVec * (c.x * width + swayX) + vec3<f32>(0.0, c.y * height + bobY, 0.0);
+    let tiltZ = select(0.0, 0.16 * c.y * height, (flags & 32u) != 0u);
+    // Ground alignment: seat standee baseline at terrain elevation and sink base corners
+    // slightly into ground so the shadow caster cleanly penetrates terrain with zero gap
+    let groundSink = (3.0 / 64.0) * height;
+    let baseDrop = select(0.06 * height + 0.12, 0.0, c.y > 0.5);
+    let worldPos = basePos + rightVec * (c.x * width + swayX) + vec3<f32>(0.0, c.y * height + bobY - groundSink - baseDrop, tiltZ);
 
     var out : StandeeShadowOut;
     out.clipPos  = u.lightViewProj * vec4<f32>(worldPos, 1.0);
@@ -262,7 +279,9 @@ fn fs_shadow_sprite(in : StandeeShadowOut) {
         let wave = sin(u.camPos.w * 9.5 - animUV.x * 26.0) * (0.024 * flagDist);
         animUV.y += wave;
     }
-    let texCoord = clamp(vec2<i32>(animUV * 64.0), vec2<i32>(0, 0), vec2<i32>(63, 63));
+    // Clamp UV.y to the art baseline (row 60) for the grounded base of standees
+    let sampleUvY = min(animUV.y, 0.95);
+    let texCoord = clamp(vec2<i32>(vec2<f32>(animUV.x, sampleUvY) * 64.0), vec2<i32>(0, 0), vec2<i32>(63, 61));
     let sampleCol = textureLoad(albedoAtlas, texCoord, i32(in.texLayer), 0);
     if (sampleCol.a < 0.5) {
         discard;
@@ -368,15 +387,20 @@ fn applyHorizonCurve(worldPos : vec3<f32>) -> vec3<f32> {
     return vec3<f32>(worldPos.x, worldPos.y - curveDrop, worldPos.z);
 }
 
-fn sampleShadowPCF(worldPos : vec3<f32>) -> f32 {
-    let lightClip = u.lightViewProj * vec4<f32>(worldPos, 1.0);
+fn sampleShadowPCF(worldPos : vec3<f32>, surfNormal : vec3<f32>, ndotl : f32) -> f32 {
+    // Normal-offset bias: push sampling point slightly along the surface normal towards light
+    // to cleanly eliminate surface self-shadow acne without disconnecting cast shadows from casters
+    let normalBias = surfNormal * (0.040 + 0.035 * (1.0 - ndotl));
+    let biasedPos  = worldPos + normalBias;
+    let lightClip  = u.lightViewProj * vec4<f32>(biasedPos, 1.0);
     let ndc = lightClip.xyz / lightClip.w;
     let shadowUV = vec2<f32>(ndc.x * 0.5 + 0.5, -ndc.y * 0.5 + 0.5);
     if (shadowUV.x < 0.01 || shadowUV.x > 0.99 || shadowUV.y < 0.01 || shadowUV.y > 0.99 || ndc.z < 0.0 || ndc.z > 1.0) {
         return 1.0;
     }
     let texel = 1.0 / 2048.0;
-    let depthRef = ndc.z - 0.0025;
+    let depthBias = max(0.00035, 0.00080 * (1.0 - ndotl));
+    let depthRef = ndc.z - depthBias;
     var sum = 0.0;
     for (var y = -1; y <= 1; y = y + 1) {
         for (var x = -1; x <= 1; x = x + 1) {
@@ -639,28 +663,34 @@ fn fs_world(in : WorldVSOut) -> @location(0) vec4<f32> {
         return vec4<f32>(bannerInk, camDist);
     }
 
-    // 1. Multi-Scale Organic Procgen Noise & Micro-Surface Perturbation (No Synthetic Vector Grid)
-    let macroNoise  = fbmPaper(mapXZ * 0.42);
-    let mediumNoise = fbmPaper(mapXZ * 1.85 + vec2<f32>(macroNoise * 1.4, -macroNoise * 1.1));
-    let fineGrain   = valueNoise2D(mapXZ * 9.5);
-    let microGrain  = valueNoise2D(mapXZ * 24.0);
-
-    // Continuous watercolor base tint smoothly interpolated across vertices (Direction C)
+    // 1. Multi-Scale Organic Procgen Noise & Micro-Surface Perturbation (skipped in charted Dungeon Mode)
     var col = in.terrainColor.rgb;
+    var mediumNoise = 0.5;
+    var fineGrain   = 0.5;
+    var microGrain  = 0.5;
 
-    // Organic watercolor pigment bleed & drying-edge wash feathering (Direction A)
-    let edgeBlend = in.terrainParams.y;
-    if (edgeBlend > 0.04 && edgeBlend < 0.96) {
-        let dryingEdge = 1.0 - abs(edgeBlend - 0.50) * 2.0;
-        let pigmentConcentration = dryingEdge * (0.05 + 0.06 * mediumNoise);
-        col *= (1.0 - pigmentConcentration);
+    if ((in.flags & 16u) == 0u || in.discovery.x < 0.995) {
+        let macroNoise = fbmPaper(mapXZ * 0.42);
+        mediumNoise    = fbmPaper(mapXZ * 1.85 + vec2<f32>(macroNoise * 1.4, -macroNoise * 1.1));
+        fineGrain      = valueNoise2D(mapXZ * 9.5);
+        microGrain     = valueNoise2D(mapXZ * 24.0);
     }
-    col *= (0.86 + 0.18 * mediumNoise + 0.08 * (fineGrain - 0.5) + 0.04 * (microGrain - 0.5));
 
-    // Perturb terrain surface normal with organic micro-relief so sunlight catches turf & soil grain
-    let microNx = (fineGrain - 0.5) * 0.16 + (microGrain - 0.5) * 0.08;
-    let microNz = (mediumNoise - 0.5) * 0.16 - (fineGrain - 0.5) * 0.08;
-    surfNormal = normalize(surfNormal + vec3<f32>(microNx, 0.0, microNz));
+    if ((in.flags & 16u) == 0u) {
+        // Organic watercolor pigment bleed & drying-edge wash feathering (Direction A)
+        let edgeBlend = in.terrainParams.y;
+        if (edgeBlend > 0.04 && edgeBlend < 0.96) {
+            let dryingEdge = 1.0 - abs(edgeBlend - 0.50) * 2.0;
+            let pigmentConcentration = dryingEdge * (0.05 + 0.06 * mediumNoise);
+            col *= (1.0 - pigmentConcentration);
+        }
+        col *= (0.86 + 0.18 * mediumNoise + 0.08 * (fineGrain - 0.5) + 0.04 * (microGrain - 0.5));
+
+        // Perturb terrain surface normal with organic micro-relief so sunlight catches turf & soil grain
+        let microNx = (fineGrain - 0.5) * 0.16 + (microGrain - 0.5) * 0.08;
+        let microNz = (mediumNoise - 0.5) * 0.16 - (fineGrain - 0.5) * 0.08;
+        surfNormal = normalize(surfNormal + vec3<f32>(microNx, 0.0, microNz));
+    }
 
     // 2. Watabou One-Page Dungeon Mode (2.5D Raised Walls, Inked Ashlar Masonry, Sunken Pools & Gridded Flagstones)
     if ((in.flags & 16u) != 0u) {
@@ -874,50 +904,116 @@ static const char* kSceneWgslPart2b = R"(
                 col = mix(col, grassMod, vegFactor * 0.28);
             }
 
-            // C) Arid Steppe & Badlands Wind-Swept Strata (Continuous via in.terrainParams.x)
+            // C) Sorcery! Arid Steppes & Sand Dunes: Warm Golden Ochre Wash + Inked Slope Stippling
             let aridFactor = in.terrainParams.x;
             if (aridFactor > 0.02) {
-                let strata = sin(mapXZ.x * 0.45 + mapXZ.y * 0.85 + mediumNoise * 4.5) * 0.5 + 0.5;
-                let warmOchre = vec3<f32>(0.95, 0.74, 0.36);
-                let rustScree = vec3<f32>(0.62, 0.34, 0.18);
-                let strataCol = mix(warmOchre, rustScree, (1.0 - strata) * microGrain * 0.55);
-                col = mix(col, strataCol, aridFactor * 0.28);
+                let duneSun = smoothstep(-0.10, 0.65, dot(surfNormal, normalize(u.sunDir.xyz)));
+                let warmDuneOchre = vec3<f32>(0.96, 0.82, 0.44);
+                let coolDuneSand  = vec3<f32>(0.76, 0.64, 0.42);
+                let duneWash = mix(coolDuneSand, warmDuneOchre, duneSun);
+                col = mix(col, duneWash, aridFactor * 0.52);
+
+                let stippleUV = mapXZ * 3.4;
+                let stippleCell = fract(stippleUV);
+                let stippleDist = length(stippleCell - vec2<f32>(0.5, 0.5));
+                let stippleDot = 1.0 - smoothstep(0.06, 0.16, stippleDist);
+                // Ultra-lightweight single hash evaluation for zero-overhead stipple noise
+                let stippleNoise = hash2D(floor(stippleUV));
+                if (stippleNoise > 0.40 && slopeMag > 0.08) {
+                    col = mix(col, inkDark, stippleDot * 0.40 * aridFactor);
+                }
             }
 
-            // D) 3D Mountain & Cliff Rock Strata + Alpine Snow Accumulation
-            // Automatically transitions steep 3D slopes & high elevations into craggy stratified stone
-            let rockBlend = clamp(smoothstep(0.22, 0.52, slopeMag) + smoothstep(4.2, 6.8, in.rawMapPos.y) * 0.65, 0.0, 1.0);
+            // D) Sorcery! Mountain Knife-Edge Ridge Inking & Alpine Snow Crests
+            let rockBlend = clamp(smoothstep(0.20, 0.50, slopeMag) + smoothstep(4.0, 6.8, in.rawMapPos.y) * 0.65, 0.0, 1.0);
             if (rockBlend > 0.01) {
-                let strataWave = sin(in.rawMapPos.y * 4.2 + mediumNoise * 5.0 + mapXZ.x * 0.35);
-                let crevice = smoothstep(0.65, 0.92, strataWave);
-                let graniteLit  = vec3<f32>(0.58, 0.61, 0.66) * (0.90 + 0.20 * fineGrain);
-                let basaltDark  = vec3<f32>(0.28, 0.31, 0.36);
-                let rockCol     = mix(graniteLit, basaltDark, crevice * 0.65 + (1.0 - microGrain) * 0.25);
-                col = mix(col, rockCol, rockBlend);
+                let graniteLit  = vec3<f32>(0.64, 0.66, 0.70) * (0.90 + 0.15 * fineGrain);
+                let basaltDark  = vec3<f32>(0.26, 0.28, 0.32);
+                let rockCol     = mix(graniteLit, basaltDark, (1.0 - microGrain) * 0.25);
+                col = mix(col, rockCol, rockBlend * 0.85);
 
-                // Perturb rock normal along fracture strata for crisp 3D cliff relief
-                surfNormal = normalize(surfNormal + vec3<f32>(strataWave * 0.18 * rockBlend, -crevice * 0.15 * rockBlend, strataWave * 0.14 * rockBlend));
+                // 1. High Mountain Ridge Knife-Edge Inking (Performant continuous normal & elevation scalar)
+                let ridgeCrest = (1.0 - surfNormal.y) * smoothstep(3.5, 6.5, in.rawMapPos.y);
+                if (ridgeCrest > 0.15) {
+                    let ridgeInk = smoothstep(0.30, 0.65, ridgeCrest) * (1.0 - smoothstep(0.0, 0.18, abs(fract(in.rawMapPos.y * 0.45) - 0.5)));
+                    col = mix(col, inkDark, ridgeInk * 0.65);
+                }
 
-                // Natural Alpine Snow accumulation on high-altitude upward-facing ledges
-                let snowHeight = smoothstep(5.4, 7.2, in.rawMapPos.y + (mediumNoise - 0.5) * 0.8);
-                let snowFlatness = smoothstep(0.45, 0.78, surfNormal.y);
+                // 2. Alpine Snow accumulation on high upward-facing ledges (crisp contrast)
+                let snowHeight = smoothstep(5.0, 6.8, in.rawMapPos.y + (mediumNoise - 0.5) * 0.6);
+                let snowFlatness = smoothstep(0.40, 0.75, surfNormal.y);
                 let snowMask = clamp(snowHeight * snowFlatness, 0.0, 1.0);
-                let snowCol = vec3<f32>(0.96, 0.98, 1.0) * (0.95 + 0.06 * fineGrain);
+                let snowCol = vec3<f32>(0.97, 0.98, 1.0) * (0.95 + 0.05 * fineGrain);
                 col = mix(col, snowCol, snowMask);
             }
 
-            // E) Winding Rivers with Animated Ripple Normals & Lush Riverbanks
+            // G) Sorcery! Topographic Elevation Contour Lines on Hills, Mounds & Rolling Steppes
+            let elevSpacing = 1.25;
+            let elevFract = fract(in.rawMapPos.y / elevSpacing + (mediumNoise - 0.5) * 0.06);
+            let contourDist = abs(elevFract - 0.5) * 2.0;
+            let contourStroke = 1.0 - smoothstep(0.0, 0.065, contourDist);
+            let contourMod = smoothstep(0.06, 0.28, slopeMag) * (1.0 - smoothstep(0.48, 0.78, slopeMag));
+            let isHillOrSteppe = clamp(aridFactor * 1.5 + smoothstep(1.2, 4.2, in.rawMapPos.y), 0.0, 1.0);
+            let contourInk = contourStroke * contourMod * (0.35 + 0.55 * isHillOrSteppe);
+            col = mix(col, inkDark, contourInk * 0.62);
+
+            // E) Winding Rivers with Multi-Tiered Depth Banding, Inked Shelf Contours & Downstream Current Flow
             if (sdfRiver < 0.35) {
+                let riverW = max(0.5, in.gradAndUV.w);
                 let riverFill = 1.0 - smoothstep(-0.15, 0.12, sdfRiver);
-                let riverBank = (1.0 - smoothstep(0.0, 0.28, abs(sdfRiver))) * (1.0 - riverFill);
-                let rWave = sin(mapXZ.x * 1.4 + mapXZ.y * 1.2 - time * 2.4) * 0.08;
-                let riverCol = vec3<f32>(0.18, 0.74, 0.74) + vec3<f32>(rWave * 0.4, rWave * 0.8, rWave);
-                col = mix(col, col * 0.65, riverBank * 0.55); // Wet dark soil along riverbank
+                let riverBank = (1.0 - smoothstep(0.0, 0.30, abs(sdfRiver))) * (1.0 - riverFill);
+
+                // 1. Wet alluvial silt, clay & pebbles along the riverbank margins
+                let wetSiltCol = vec3<f32>(0.34, 0.28, 0.20) * (0.88 + 0.15 * fineGrain);
+                col = mix(col, wetSiltCol, riverBank * 0.70);
+
+                // 2. Multi-tiered river depth color palette matching oceanic nautical tiers
+                let depthNorm = clamp(-sdfRiver / riverW, 0.0, 1.0);
+                let riverShoal = vec3<f32>(0.220, 0.780, 0.720); // Shallow shoal turquoise along banks
+                let riverMid   = vec3<f32>(0.125, 0.630, 0.620); // Mid-current ocean turquoise
+                let riverDeep  = vec3<f32>(0.055, 0.360, 0.440); // Deep channel trench navy
+
+                var riverWater = riverDeep;
+                if (depthNorm < 0.35) {
+                    riverWater = riverShoal;
+                } else if (depthNorm < 0.72) {
+                    riverWater = riverMid;
+                }
+
+                // Crisp vector ink shelf contours separating river depth tiers (mirroring sea contours)
+                let rShelf0 = 1.0 - smoothstep(0.0, 0.12, abs(depthNorm - 0.35));
+                let rShelf1 = 1.0 - smoothstep(0.0, 0.12, abs(depthNorm - 0.72));
+                let riverContours = max(rShelf0, rShelf1) * 0.40;
+
+                // 3. Directional Downhill Current Flow
+                let gradLen = length(in.gradAndUV.xy);
+                let flowDir = select(vec2<f32>(0.0, -1.0), -in.gradAndUV.xy / max(0.001, gradLen), gradLen > 0.02);
+                let perpDir = vec2<f32>(-flowDir.y, flowDir.x);
+
+                // Longitudinal downstream coordinate & transverse channel coordinate
+                let sLong  = dot(mapXZ, flowDir) - time * 2.8;
+                let sCross = dot(mapXZ, perpDir);
+
+                // Downstream traveling ripples & current streaks
+                let flowWave = sin(sCross * 3.2) * sin(sLong * 2.2) * 0.08;
+                let currentStreak = smoothstep(0.45, 0.92, sin(sLong * 1.6 + sin(sCross * 1.4) * 1.8)) * depthNorm * 0.22;
+
+                // Cartographic current chevrons (directional flow indicators pointing downstream)
+                let chevronPhase = fract(sLong * 0.40);
+                let chevronDist  = abs(fract(sCross * 0.60) - 0.5) * 2.0 - chevronPhase;
+                let chevronLine  = (1.0 - smoothstep(0.0, 0.12, abs(chevronDist))) * smoothstep(0.2, 0.85, depthNorm) * 0.20;
+
+                let riverCol = riverWater + vec3<f32>(flowWave * 0.4, flowWave * 0.8, flowWave);
                 col = mix(col, riverCol, riverFill);
+                col = mix(col, inkDark, riverContours * riverFill);
+
+                let riverFoamCol = vec3<f32>(0.86, 0.99, 0.97);
+                col = mix(col, riverFoamCol, clamp(currentStreak + chevronLine, 0.0, 1.0) * riverFill);
+
                 if (sdfRiver < 0.10) {
                     isWater = 1.0;
-                    waveFoam = max(waveFoam, 0.25 + rWave * 1.5);
-                    surfNormal = normalize(vec3<f32>(rWave * 1.2, 1.0, -rWave * 1.2));
+                    waveFoam = max(waveFoam, 0.20 + (currentStreak + chevronLine) * 1.6);
+                    surfNormal = normalize(vec3<f32>(flowDir.x * flowWave * 1.8, 1.0, flowDir.y * flowWave * 1.8));
                 }
             }
 
@@ -927,14 +1023,14 @@ static const char* kSceneWgslPart2b = R"(
                 let bridgeCol = mix(vec3<f32>(0.68, 0.52, 0.36), inkColor, step(0.42, plank) * 0.45);
                 col = mix(col, bridgeCol, 1.0 - smoothstep(0.7, 1.1, sdfRoad));
             } else if (sdfRoad < 1.15) {
-                let roadNoise = (fineGrain - 0.5) * 0.18;
+                let roadNoise = (fineGrain - 0.5) * 0.12;
                 if (roadArc >= 0.0) {
-                    // Cobblestone / packed earth highway
-                    let roadFill = 1.0 - smoothstep(0.50, 0.90, sdfRoad + roadNoise);
-                    let roadBorder = (1.0 - smoothstep(0.0, 0.22, abs(sdfRoad + roadNoise - 0.68)));
-                    let cobbleCol = vec3<f32>(0.78, 0.70, 0.54) * (0.90 + 0.20 * microGrain);
+                    // Cobblestone / packed earth highway with crisp ink borders
+                    let roadFill = 1.0 - smoothstep(0.55, 0.75, sdfRoad + roadNoise);
+                    let roadBorder = 1.0 - smoothstep(0.0, 0.10, abs(sdfRoad + roadNoise - 0.70));
+                    let cobbleCol = vec3<f32>(0.84, 0.78, 0.64) * (0.92 + 0.16 * microGrain);
                     col = mix(col, cobbleCol, roadFill * 0.88);
-                    col = mix(col, col * 0.72, roadBorder * 0.45);
+                    col = mix(col, inkDark, roadBorder * 0.78);
                 } else {
                     // Worn dirt & pebble overland trail
                     let trailFill = 1.0 - smoothstep(0.18, 0.55, sdfRoad + roadNoise);
@@ -951,26 +1047,28 @@ static const char* kSceneWgslPart2b = R"(
 )";
 
 static const char* kSceneWgslPart2c = R"(
-    // 3.5. Diegetic Fog-of-War & Ink Bloom Discovery Front
+    // 3.5. Diegetic Fog-of-War & Ink Bloom Discovery Front (fast-path skipped when fully charted)
     let rawDisc = in.discovery.x;
-    let paperBleed = (mediumNoise - 0.5) * 0.28;
-    let charted = smoothstep(0.35, 0.65, rawDisc + paperBleed);
+    if (rawDisc < 0.995) {
+        let paperBleed = (mediumNoise - 0.5) * 0.28;
+        let charted = smoothstep(0.35, 0.65, rawDisc + paperBleed);
 
-    // Uncharted vintage dry vellum base with delicate graphite pencil contour sketches
-    let vellumBase = vec3<f32>(0.915, 0.865, 0.775) * (0.93 + 0.10 * mediumNoise + 0.03 * (fineGrain - 0.5));
-    let pencilCoast = (1.0 - smoothstep(0.0, 0.22, abs(sdfCoast))) * 0.55;
-    let pencilSlope = length(gradXZ) * 0.40;
-    let pencilRoad  = (1.0 - smoothstep(0.0, 0.35, sdfRoad)) * 0.25;
-    let pencilGraphite = vec3<f32>(0.38, 0.34, 0.30);
-    let unchartedCol = mix(vellumBase, pencilGraphite, clamp(pencilCoast + pencilSlope + pencilRoad, 0.0, 1.0));
+        // Uncharted vintage dry vellum base with delicate graphite pencil contour sketches
+        let vellumBase = vec3<f32>(0.915, 0.865, 0.775) * (0.93 + 0.10 * mediumNoise + 0.03 * (fineGrain - 0.5));
+        let pencilCoast = (1.0 - smoothstep(0.0, 0.22, abs(sdfCoast))) * 0.55;
+        let pencilSlope = length(gradXZ) * 0.40;
+        let pencilRoad  = (1.0 - smoothstep(0.0, 0.35, sdfRoad)) * 0.25;
+        let pencilGraphite = vec3<f32>(0.38, 0.34, 0.30);
+        let unchartedCol = mix(vellumBase, pencilGraphite, clamp(pencilCoast + pencilSlope + pencilRoad, 0.0, 1.0));
 
-    // Transition uncharted pencil sketch vellum into rich vibrant world!
-    col = mix(unchartedCol, col, charted);
+        // Transition uncharted pencil sketch vellum into rich vibrant world!
+        col = mix(unchartedCol, col, charted);
 
-    // Ink Bloom Capillary Edge: concentrated dark pigment fringe where wet watercolor blooms into dry paper!
-    let inkBloomEdge = (1.0 - smoothstep(0.0, 0.15, abs(charted - 0.5))) * smoothstep(0.05, 0.95, rawDisc);
-    let bloomPigment = vec3<f32>(0.16, 0.12, 0.08);
-    col = mix(col, bloomPigment, inkBloomEdge * 0.55);
+        // Ink Bloom Capillary Edge: concentrated dark pigment fringe where wet watercolor blooms into dry paper!
+        let inkBloomEdge = (1.0 - smoothstep(0.0, 0.15, abs(charted - 0.5))) * smoothstep(0.05, 0.95, rawDisc);
+        let bloomPigment = vec3<f32>(0.16, 0.12, 0.08);
+        col = mix(col, bloomPigment, inkBloomEdge * 0.55);
+    }
 
     // 4. Diegetic Map-Surface Combat Telegraphs (Cat Quest AoE Circles, Cones & Arcane Rings!)
     let teleCount = u32(u.camBasisX.w);
@@ -1017,7 +1115,15 @@ static const char* kSceneWgslPart2c = R"(
     let N = surfNormal;
     let L = normalize(u.sunDir.xyz);
     let ndotl = max(dot(N, L), 0.0);
-    let shadow = sampleShadowPCF(in.worldPos);
+
+    // High-performance water wave distortion on cast shadows:
+    // Distorts shadow sampling coordinates along wave slopes & surface ripples
+    var shadowWorldPos = in.worldPos;
+    if (isWater > 0.0) {
+        let waveDistort = vec3<f32>(surfNormal.x * 0.55, (surfNormal.y - 1.0) * 0.35, surfNormal.z * 0.55) * isWater;
+        shadowWorldPos += waveDistort;
+    }
+    let shadow = sampleShadowPCF(shadowWorldPos, N, ndotl);
     let shadowAmt = clamp(1.0 - shadow, 0.0, 1.0);
 
     // Hemispherical sky ambient lighting with rich day/night contrast
@@ -1130,7 +1236,9 @@ fn vs_sprite(@builtin(vertex_index) vertexIndex : u32) -> StandeeVSOut {
     let rightVec = normalize(vec3<f32>(u.camBasisX.x, 0.0, u.camBasisX.z));
     // Slight backward tabletop standee tilt for 2.5D pop-up feel
     let tiltZ = select(0.0, 0.16 * c.y * height, (flags & 32u) != 0u);
-    let worldPos = basePos + rightVec * (c.x * width + swayX) + vec3<f32>(0.0, c.y * height + bobY, tiltZ);
+    // Ground alignment: seat standee baseline cleanly on terrain
+    let groundSink = (3.0 / 64.0) * height;
+    let worldPos = basePos + rightVec * (c.x * width + swayX) + vec3<f32>(0.0, c.y * height + bobY - groundSink, tiltZ);
 
     var out : StandeeVSOut;
     out.clipPos    = u.viewProj * vec4<f32>(worldPos, 1.0);
@@ -1158,10 +1266,8 @@ fn fs_sprite(in : StandeeVSOut) -> @location(0) vec4<f32> {
         let wave = sin(u.camPos.w * 9.5 - animUV.x * 26.0) * (0.024 * flagDist);
         animUV.y += wave;
     }
-    let fw = fwidth(animUV);
-    let crispUV = computeCrispUV(animUV, fw);
-    let albedo = textureSampleLevel(albedoAtlas, atlasSampler, crispUV, i32(in.texLayer), 0.0);
-    if (albedo.a < 0.5) {
+    let albedo = textureSampleLevel(albedoAtlas, atlasSampler, animUV, i32(in.texLayer), 0.0);
+    if (albedo.a < 0.28) {
         discard;
     }
 
@@ -1176,7 +1282,7 @@ fn fs_sprite(in : StandeeVSOut) -> @location(0) vec4<f32> {
         }
     }
 
-    let normSample = textureSampleLevel(normalAtlas, atlasSampler, crispUV, i32(in.texLayer), 0.0);
+    let normSample = textureSampleLevel(normalAtlas, atlasSampler, animUV, i32(in.texLayer), 0.0);
     let emissive = normSample.a;
 
     // Reconstruct 3D world-space normal from the 2.5D normal atlas!
@@ -1197,7 +1303,7 @@ fn fs_sprite(in : StandeeVSOut) -> @location(0) vec4<f32> {
     let rockDiff = clamp(rawNdotL * 0.78 + 0.22, 0.0, 1.0);
     let ndotl    = select(rockDiff, wrapDiff, isFoliage);
 
-    let shadow = sampleShadowPCF(in.worldPos);
+    let shadow = sampleShadowPCF(in.worldPos, N, max(rawNdotL, 0.0));
     let shadowAmt = clamp(1.0 - shadow, 0.0, 1.0);
 
     // Root/ground contact ambient occlusion + hemispherical sky ambient
@@ -1368,18 +1474,18 @@ fn fs_post(in : PostVSOut) -> @location(0) vec4<f32> {
             accum += tap.rgb * w;
             wSum  += w;
         }
+    } else {
+        // 2. 4-Tap Subpixel Edge Anti-Aliasing (in-focus regions only, preserving crisp bokeh discs)
+        let sU = textureSampleLevel(sceneTex, sceneSampler, in.uv + vec2<f32>(0.0, -texelSize.y), 0.0).rgb;
+        let sD = textureSampleLevel(sceneTex, sceneSampler, in.uv + vec2<f32>(0.0,  texelSize.y), 0.0).rgb;
+        let sL = textureSampleLevel(sceneTex, sceneSampler, in.uv + vec2<f32>(-texelSize.x, 0.0), 0.0).rgb;
+        let sR = textureSampleLevel(sceneTex, sceneSampler, in.uv + vec2<f32>( texelSize.x, 0.0), 0.0).rgb;
+        let crossAvg = (sU + sD + sL + sR) * 0.25;
+        let edgeDiff = abs(sU - sD) + abs(sL - sR);
+        let edgeContrast = dot(edgeDiff, vec3<f32>(0.299, 0.587, 0.114));
+        let aaBlend = smoothstep(0.14, 0.48, edgeContrast) * 0.45;
+        accum = mix(accum, crossAvg * wSum, aaBlend);
     }
-
-    // 2. 4-Tap Subpixel Edge Anti-Aliasing
-    let sU = textureSampleLevel(sceneTex, sceneSampler, in.uv + vec2<f32>(0.0, -texelSize.y), 0.0).rgb;
-    let sD = textureSampleLevel(sceneTex, sceneSampler, in.uv + vec2<f32>(0.0,  texelSize.y), 0.0).rgb;
-    let sL = textureSampleLevel(sceneTex, sceneSampler, in.uv + vec2<f32>(-texelSize.x, 0.0), 0.0).rgb;
-    let sR = textureSampleLevel(sceneTex, sceneSampler, in.uv + vec2<f32>( texelSize.x, 0.0), 0.0).rgb;
-    let crossAvg = (sU + sD + sL + sR) * 0.25;
-    let edgeDiff = abs(sU - sD) + abs(sL - sR);
-    let edgeContrast = dot(edgeDiff, vec3<f32>(0.299, 0.587, 0.114));
-    let aaBlend = smoothstep(0.14, 0.48, edgeContrast) * 0.45;
-    accum = mix(accum, crossAvg * wSum, aaBlend);
 
     var hdrBase = (accum / wSum);
 
@@ -2306,6 +2412,7 @@ struct GpuChartContext {
         const auto& spList = world.standees();
         uploadedSpriteCount = static_cast<uint32_t>(spList.size());
         size_t spBytes = std::max<size_t>(sizeof(StandeeInstance) * 4, spList.size() * sizeof(StandeeInstance));
+        bool spriteBufferReallocated = false;
         if (!spriteBuffer || spBytes > spriteBufferCapacity) {
             if (spriteBuffer) {
                 wgpuBufferDestroy(spriteBuffer);
@@ -2317,9 +2424,24 @@ struct GpuChartContext {
             sDesc.size = spriteBufferCapacity;
             spriteBuffer = wgpuDeviceCreateBuffer(device, &sDesc);
             needRebind = true;
+            spriteBufferReallocated = true;
         }
         if (!spList.empty()) {
-            wgpuQueueWriteBuffer(queue, spriteBuffer, 0, spList.data(), spList.size() * sizeof(StandeeInstance));
+            if (rebuildStaticWorldVerts || spriteBufferReallocated) {
+                wgpuQueueWriteBuffer(queue, spriteBuffer, 0, spList.data(), spList.size() * sizeof(StandeeInstance));
+            } else {
+                uint32_t staticCnt = std::min<uint32_t>(world.staticStandeeCount(), static_cast<uint32_t>(spList.size()));
+                uint32_t dynCnt = static_cast<uint32_t>(spList.size()) - staticCnt;
+                if (dynCnt > 0) {
+                    wgpuQueueWriteBuffer(
+                        queue,
+                        spriteBuffer,
+                        static_cast<uint64_t>(staticCnt) * sizeof(StandeeInstance),
+                        spList.data() + staticCnt,
+                        static_cast<size_t>(dynCnt) * sizeof(StandeeInstance)
+                    );
+                }
+            }
         }
 
         const auto& lights = world.pointLights();
@@ -2554,12 +2676,21 @@ struct GpuChartContext {
 };
 
 uint32_t computeCrc32(const uint8_t* data, size_t len) noexcept {
+    static constexpr auto kCrcTable = []() constexpr {
+        std::array<uint32_t, 256> table{};
+        for (uint32_t i = 0; i < 256; ++i) {
+            uint32_t c = i;
+            for (int b = 0; b < 8; ++b) {
+                c = (c >> 1u) ^ (0xEDB88320u & (-(static_cast<int32_t>(c & 1u))));
+            }
+            table[i] = c;
+        }
+        return table;
+    }();
+
     uint32_t crc = 0xFFFFFFFFu;
     for (size_t i = 0; i < len; ++i) {
-        crc ^= data[i];
-        for (int b = 0; b < 8; ++b) {
-            crc = (crc >> 1u) ^ (0xEDB88320u & (-(static_cast<int32_t>(crc & 1u))));
-        }
+        crc = kCrcTable[(crc ^ data[i]) & 0xFFu] ^ (crc >> 8u);
     }
     return ~crc;
 }
@@ -2770,6 +2901,7 @@ struct ChartLoopContext {
     bool atlasMode{false};
     float targetAtlasZoom{0.0f};
     float stepSoundCooldown{0.0f};
+    float hotReloadPollTimer{0.0f};
     float touchMoveX{0.0f};
     float touchMoveZ{0.0f};
     bool touchSprintOrDodge{false};
@@ -2821,17 +2953,21 @@ static void renderSingleFrame(ChartLoopContext& l) {
     }
 
 #if !defined(__EMSCRIPTEN__)
-    // Live Eatscript hot-reload check
-    if (!l.activeScript.empty() && std::filesystem::exists(l.activeScript)) {
-        auto curWrite = std::filesystem::last_write_time(l.activeScript);
-        if (curWrite != l.lastScriptWriteTime) {
-            l.lastScriptWriteTime = curWrite;
-            if (l.scriptEngine->executeFile(l.activeScript)) {
-                l.world->rebuildWorldGeometry(l.world->hero().pos.x, l.world->hero().pos.z);
-                l.world->updateSimulation(dt, l.ctx->targetWidth, l.ctx->targetHeight);
-                l.ctx->uploadWorldAndDynamicEntities(*l.world, true);
-                l.world->clearMeshDirty();
-                std::cout << "[Eatscharted] Hot-reloaded '" << l.activeScript << "'\n";
+    // Live Eatscript hot-reload check (throttled to 2 Hz to avoid per-frame NTFS metadata syscalls)
+    l.hotReloadPollTimer += dt;
+    if (l.hotReloadPollTimer >= 0.5f) {
+        l.hotReloadPollTimer = 0.0f;
+        if (!l.activeScript.empty() && std::filesystem::exists(l.activeScript)) {
+            auto curWrite = std::filesystem::last_write_time(l.activeScript);
+            if (curWrite != l.lastScriptWriteTime) {
+                l.lastScriptWriteTime = curWrite;
+                if (l.scriptEngine->executeFile(l.activeScript)) {
+                    l.world->rebuildWorldGeometry(l.world->hero().pos.x, l.world->hero().pos.z);
+                    l.world->updateSimulation(dt, l.ctx->targetWidth, l.ctx->targetHeight);
+                    l.ctx->uploadWorldAndDynamicEntities(*l.world, true);
+                    l.world->clearMeshDirty();
+                    std::cout << "[Eatscharted] Hot-reloaded '" << l.activeScript << "'\n";
+                }
             }
         }
     }

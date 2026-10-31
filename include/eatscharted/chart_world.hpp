@@ -160,6 +160,7 @@ public:
     [[nodiscard]] const InkAtlasData& inkAtlas() const noexcept { return inkAtlas_; }
     [[nodiscard]] const std::vector<ChartVertex>& worldVertices() const noexcept { return worldVerts_; }
     [[nodiscard]] const std::vector<StandeeInstance>& standees() const noexcept { return activeStandees_; }
+    [[nodiscard]] uint32_t staticStandeeCount() const noexcept { return static_cast<uint32_t>(staticStandees_.size()); }
     [[nodiscard]] const std::vector<CombatTelegraph>& telegraphs() const noexcept { return activeTelegraphs_; }
     [[nodiscard]] const std::vector<PointLight>& pointLights() const noexcept { return pointLights_; }
     [[nodiscard]] const eatsbits::ui::BatchRenderer2D& overlay2D() const noexcept { return overlay2D_; }

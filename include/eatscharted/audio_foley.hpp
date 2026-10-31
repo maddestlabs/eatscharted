@@ -45,6 +45,7 @@ private:
 
     static constexpr int kMaxVoices = 8;
     Voice voices_[kMaxVoices]{};
+    std::atomic_flag voiceLock_ = ATOMIC_FLAG_INIT;
     uint32_t rngState_{0x9E3779B9u};
     bool initialized_{false};
     void* maDevicePtr_{nullptr};

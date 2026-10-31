@@ -66,6 +66,8 @@ void AudioFoleyEngine::shutdown() {
 }
 
 void AudioFoleyEngine::triggerSound(uint16_t soundId, float intensity) {
+    while (voiceLock_.test_and_set(std::memory_order_acquire)) {}
+
     int slot = 0;
     float lowestEnv = 999.0f;
     for (int i = 0; i < kMaxVoices; ++i) {
@@ -121,10 +123,13 @@ void AudioFoleyEngine::triggerSound(uint16_t soundId, float intensity) {
     }
 
     v.active.store(true, std::memory_order_release);
+    voiceLock_.clear(std::memory_order_release);
 }
 
 void AudioFoleyEngine::mixSamples(float* outInterleavedStereo, uint32_t frameCount, uint32_t sampleRate) noexcept {
     std::memset(outInterleavedStereo, 0, frameCount * 2 * sizeof(float));
+    while (voiceLock_.test_and_set(std::memory_order_acquire)) {}
+
     const float invSr = 1.0f / static_cast<float>(sampleRate);
     constexpr float kTwoPi = 6.283185307f;
 
@@ -132,7 +137,7 @@ void AudioFoleyEngine::mixSamples(float* outInterleavedStereo, uint32_t frameCou
         float mix = 0.0f;
         for (int i = 0; i < kMaxVoices; ++i) {
             Voice& v = voices_[i];
-            if (!v.active.load(std::memory_order_acquire)) continue;
+            if (!v.active.load(std::memory_order_relaxed)) continue;
 
             rngState_ = rngState_ * 1664525u + 1013904223u;
             float white = (static_cast<float>(rngState_ & 0x00FFFFFFu) / static_cast<float>(0x00800000u)) - 1.0f;
@@ -149,7 +154,7 @@ void AudioFoleyEngine::mixSamples(float* outInterleavedStereo, uint32_t frameCou
 
             v.env *= v.decay;
             if (v.env < 0.0002f) {
-                v.active.store(false, std::memory_order_release);
+                v.active.store(false, std::memory_order_relaxed);
             }
         }
 
@@ -157,6 +162,8 @@ void AudioFoleyEngine::mixSamples(float* outInterleavedStereo, uint32_t frameCou
         outInterleavedStereo[f * 2 + 0] = mix;
         outInterleavedStereo[f * 2 + 1] = mix;
     }
+
+    voiceLock_.clear(std::memory_order_release);
 }
 
 } // namespace eatscharted

@@ -110,6 +110,77 @@ struct LayerSlice {
         }
     }
 
+    void blendPixel(int x, int y, RGBA8 c, Vec3f norm = {0.0f, 0.0f, 1.0f}, float h = 0.5f, float em = 0.0f) noexcept {
+        if (x < 0 || x >= kS || y < 0 || y >= kS) return;
+        if (c.a == 0) return;
+        int idx = y * kS + x;
+        float srcA = static_cast<float>(c.a) / 255.0f;
+        float dstA = static_cast<float>(albedo[idx].a) / 255.0f;
+        float outA = srcA + dstA * (1.0f - srcA);
+        if (outA > 1e-4f) {
+            float r = (static_cast<float>(c.r) * srcA + static_cast<float>(albedo[idx].r) * dstA * (1.0f - srcA)) / outA;
+            float g = (static_cast<float>(c.g) * srcA + static_cast<float>(albedo[idx].g) * dstA * (1.0f - srcA)) / outA;
+            float b = (static_cast<float>(c.b) * srcA + static_cast<float>(albedo[idx].b) * dstA * (1.0f - srcA)) / outA;
+            albedo[idx] = RGBA8{
+                static_cast<uint8_t>(std::clamp(r, 0.0f, 255.0f)),
+                static_cast<uint8_t>(std::clamp(g, 0.0f, 255.0f)),
+                static_cast<uint8_t>(std::clamp(b, 0.0f, 255.0f)),
+                static_cast<uint8_t>(std::clamp(outA * 255.0f, 0.0f, 255.0f))
+            };
+        }
+        height[idx] = std::max(height[idx], h);
+        emissive[idx] = std::max(emissive[idx], em);
+        if (norm.x != 0.0f || norm.y != 0.0f || norm.z != 1.0f) {
+            explicitNorm[idx] = norm;
+            hasExplicitNorm[idx] = true;
+        }
+    }
+
+    void drawInkDot(float cx, float cy, float radius, RGBA8 col, float h = 0.4f) noexcept {
+        int ix0 = std::max(0, static_cast<int>(cx - radius - 1.0f));
+        int ix1 = std::min(kS - 1, static_cast<int>(cx + radius + 1.0f));
+        int iy0 = std::max(0, static_cast<int>(cy - radius - 1.0f));
+        int iy1 = std::min(kS - 1, static_cast<int>(cy + radius + 1.0f));
+        for (int y = iy0; y <= iy1; ++y) {
+            for (int x = ix0; x <= ix1; ++x) {
+                float dist = std::hypot(static_cast<float>(x) + 0.5f - cx, static_cast<float>(y) + 0.5f - cy);
+                if (dist <= radius) {
+                    float cov = std::clamp(radius - dist + 0.5f, 0.0f, 1.0f);
+                    RGBA8 c = col;
+                    c.a = static_cast<uint8_t>(std::round(static_cast<float>(col.a) * cov));
+                    blendPixel(x, y, c, {0.0f, -0.2f, 0.98f}, h);
+                }
+            }
+        }
+    }
+
+    void drawInkLine(float x0, float y0, float x1, float y1, float radius, RGBA8 col, float h = 0.4f) noexcept {
+        float dx = x1 - x0;
+        float dy = y1 - y0;
+        float len = std::sqrt(dx * dx + dy * dy);
+        int steps = std::max(1, static_cast<int>(len * 2.5f));
+        for (int i = 0; i <= steps; ++i) {
+            float t = static_cast<float>(i) / static_cast<float>(steps);
+            drawInkDot(x0 + dx * t, y0 + dy * t, radius, col, h);
+        }
+    }
+
+    void drawInkBezier(float x0, float y0, float cx, float cy, float x1, float y1,
+                       float r0, float r1, RGBA8 col, float h = 0.4f) noexcept {
+        float d0x = cx - x0, d0y = cy - y0;
+        float d1x = x1 - cx, d1y = y1 - cy;
+        float estLen = std::sqrt(d0x * d0x + d0y * d0y) + std::sqrt(d1x * d1x + d1y * d1y);
+        int steps = std::max(3, static_cast<int>(estLen * 2.5f));
+        for (int i = 0; i <= steps; ++i) {
+            float t = static_cast<float>(i) / static_cast<float>(steps);
+            float it = 1.0f - t;
+            float px = it * it * x0 + 2.0f * it * t * cx + t * t * x1;
+            float py = it * it * y0 + 2.0f * it * t * cy + t * t * y1;
+            float r = r0 + (r1 - r0) * t;
+            drawInkDot(px, py, r, col, h);
+        }
+    }
+
     // Adds a crisp hand-inked outline + subtle warm paper standee rim around opaque pixels
     void applyInkOutlineAndPaperCutout() noexcept {
         std::vector<RGBA8> copy(albedo, albedo + (kS * kS));
@@ -287,388 +358,716 @@ void synthRockFormationStandee(LayerSlice& s, uint32_t seed, int style) {
     }
 }
 
-// Realms-style 2.5D Volumetric Foliage & Grass Patch Synthesizer
-// Generates rich leaf clusters with 3D spherical/tiered normals, self-shadowed interior AO,
-// and natural organic silhouettes (no flat black cartoon outlines).
+// Sorcery! x Watabou Hand-Drawn Cartographic Foliage & Landscape Flourish Synthesizer
+// Replaces chunky pixel-art clusters with elegant scalloped pen-and-ink contours,
+// soft watercolor washes, hand-inked underside hachures, and delicate parchment stippling.
 void synthForestCanopy(LayerSlice& s, uint32_t seed, int style) {
     s.clear();
-    // style 0: Realms 2.5D Multi-Tiered Deciduous Oak Tree
-    // style 1: Realms 2.5D Layered Boreal Pine Tree
-    // style 2: Coastal Palm & Tropical Shrub Cluster
-    // style 3: Realms 2.5D Lush Grass Blades & Wildflower Patch
+    // style 0: Sorcery! Hand-Inked Deciduous Oak (Scalloped Pen Lobes & Watercolor Wash)
+    // style 1: Sorcery! / Watabou Tiered Boreal Pine Spire
+    // style 2: Hand-Drawn Coastal Palm & Quill Fronds
+    // style 3: Minimalist Pen-and-Ink Cartographic Grass Tufts & Wildflowers
 
-    auto paintLeafCluster = [&](float cx, float cy, float rx, float ry,
-                                RGBA8 colLit, RGBA8 colMid, RGBA8 colDeep,
-                                float zBias, uint32_t clusterSeed) {
-        int x0 = std::max(1, static_cast<int>(cx - rx - 3.0f));
-        int x1 = std::min(kS - 2, static_cast<int>(cx + rx + 3.0f));
-        int y0 = std::max(1, static_cast<int>(cy - ry - 3.0f));
-        int y1 = std::min(kS - 2, static_cast<int>(cy + ry + 3.0f));
+    auto drawScallopedCanopyLobe = [&](float cx, float cy, float rx, float ry,
+                                       RGBA8 colLit, RGBA8 colMid, RGBA8 colShade,
+                                       float zBias, uint32_t lobeSeed) {
+        int x0 = std::max(0, static_cast<int>(cx - rx - 2.0f));
+        int x1 = std::min(kS - 1, static_cast<int>(cx + rx + 2.0f));
+        int y0 = std::max(0, static_cast<int>(cy - ry - 2.0f));
+        int y1 = std::min(kS - 1, static_cast<int>(cy + ry + 2.0f));
 
+        // 1. Soft watercolor dome wash
         for (int y = y0; y <= y1; ++y) {
             for (int x = x0; x <= x1; ++x) {
                 float dx = (static_cast<float>(x) + 0.5f - cx) / rx;
                 float dy = (static_cast<float>(y) + 0.5f - cy) / ry;
-                float angle = std::atan2(dy, dx);
-                // Organic leaf-clump scalloped edge modulation
-                float leafJag = 0.14f * std::sin(angle * 7.0f + static_cast<float>(clusterSeed & 15u)) +
-                                0.09f * std::cos(angle * 13.0f + static_cast<float>(clusterSeed >> 4u));
                 float d2 = dx * dx + dy * dy;
-                float maxR = 1.0f + leafJag;
-                if (d2 <= maxR * maxR) {
-                    float rNorm = std::sqrt(d2) / maxR;
-                    float nz = std::sqrt(std::max(0.08f, 1.0f - rNorm * rNorm));
-                    // 3D normal + individual leaf flutter perturbation
-                    float microX = (rand01(x, y, clusterSeed + 1u) - 0.5f) * 0.35f;
-                    float microY = (rand01(x, y, clusterSeed + 2u) - 0.5f) * 0.35f;
-                    Vec3f norm{dx * 0.78f + microX, -dy * 0.78f + microY, nz};
-
-                    // Leaf color based on local dome orientation & micro-leaf noise
-                    float leafShade = (-dy * 0.55f - dx * 0.25f) + (rand01(x, y, clusterSeed + 3u) - 0.5f) * 0.42f;
-                    RGBA8 col = colMid;
-                    if (leafShade > 0.16f) {
-                        col = colLit;
-                    } else if (leafShade < -0.18f || rNorm > 0.86f) {
-                        col = colDeep;
+                if (d2 <= 1.0f) {
+                    float d = std::sqrt(d2);
+                    float nz = std::sqrt(std::max(0.04f, 1.0f - d2));
+                    // Directional lighting: sun from upper-left (-X, -Y)
+                    float shade = (dy * 0.65f + dx * 0.35f);
+                    RGBA8 c = colMid;
+                    if (shade < -0.12f) {
+                        float t = std::clamp((-shade - 0.12f) / 0.65f, 0.0f, 1.0f);
+                        c.r = static_cast<uint8_t>(colMid.r + (colLit.r - colMid.r) * t);
+                        c.g = static_cast<uint8_t>(colMid.g + (colLit.g - colMid.g) * t);
+                        c.b = static_cast<uint8_t>(colMid.b + (colLit.b - colMid.b) * t);
+                    } else if (shade > 0.08f) {
+                        float t = std::clamp((shade - 0.08f) / 0.65f, 0.0f, 1.0f);
+                        c.r = static_cast<uint8_t>(colMid.r + (colShade.r - colMid.r) * t);
+                        c.g = static_cast<uint8_t>(colMid.g + (colShade.g - colMid.g) * t);
+                        c.b = static_cast<uint8_t>(colMid.b + (colShade.b - colMid.b) * t);
                     }
-                    // Subtle warm-cool variation per leaf
-                    int jitterG = static_cast<int>((rand01(x, y, clusterSeed + 5u) - 0.5f) * 18.0f);
-                    col.g = static_cast<uint8_t>(std::clamp(static_cast<int>(col.g) + jitterG, 15, 250));
-
-                    float hVal = zBias + nz * 0.28f;
-                    int idx = y * kS + x;
-                    if (s.albedo[idx].a < 128 || hVal >= s.height[idx]) {
-                        s.setPixelNormal(x, y, col, norm, hVal);
+                    // Watercolor pigment pooling near lobe boundary
+                    if (d > 0.82f) {
+                        float pool = (d - 0.82f) / 0.18f;
+                        c.r = static_cast<uint8_t>(c.r * (1.0f - pool * 0.22f));
+                        c.g = static_cast<uint8_t>(c.g * (1.0f - pool * 0.22f));
+                        c.b = static_cast<uint8_t>(c.b * (1.0f - pool * 0.22f));
                     }
+                    // Smooth boundary antialiasing
+                    if (d > 0.90f) {
+                        float alphaMul = std::clamp((1.0f - d) / 0.10f, 0.0f, 1.0f);
+                        c.a = static_cast<uint8_t>(255.0f * alphaMul);
+                    }
+                    Vec3f norm{dx * 0.75f, -dy * 0.75f, nz};
+                    s.blendPixel(x, y, c, norm, zBias + nz * 0.25f);
                 }
             }
+        }
+
+        // 2. Hand-drawn pen ink hatching on shaded lower-right crescent (Sorcery! style)
+        int numHatches = 4 + static_cast<int>(rx * 0.25f);
+        float baseHatchAngle = 0.45f + static_cast<float>(lobeSeed & 3u) * 0.04f;
+        for (int h = 0; h < numHatches; ++h) {
+            float frac = static_cast<float>(h + 1) / static_cast<float>(numHatches + 2);
+            float hAng = baseHatchAngle + frac * 1.55f; // Radian angle in lower-right sector
+            float hR = 0.55f + 0.32f * (frac * frac);
+            float hx = cx + rx * hR * std::cos(hAng);
+            float hy = cy + ry * hR * std::sin(hAng);
+            // Short 45-degree ink hatch stroke
+            float hLen = 2.0f + 1.2f * std::sin(frac * 3.14159f);
+            s.drawInkLine(hx - hLen * 0.7f, hy - hLen * 0.7f,
+                          hx + hLen * 0.7f, hy + hLen * 0.7f,
+                          0.55f, kInkDark, zBias + 0.10f);
+        }
+
+        // 3. Delicate ink stipple dots in the shadow pocket
+        for (int st = 0; st < 3; ++st) {
+            float sAng = 0.7f + static_cast<float>(st) * 0.45f;
+            float sR = 0.42f + static_cast<float>(st) * 0.18f;
+            s.drawInkDot(cx + rx * sR * std::cos(sAng),
+                         cy + ry * sR * std::sin(sAng),
+                         0.55f, kInkDark, zBias + 0.12f);
+        }
+
+        // 4. Hand-drawn ink pen outline tracing the lobe perimeter (toned to fine quill nib)
+        int arcSteps = static_cast<int>((rx + ry) * 3.14159f * 0.75f);
+        float prevX = cx + rx;
+        float prevY = cy;
+        for (int i = 1; i <= arcSteps; ++i) {
+            float a = static_cast<float>(i) / static_cast<float>(arcSteps) * 6.2831853f;
+            float px = cx + rx * std::cos(a);
+            float py = cy + ry * std::sin(a);
+            s.drawInkLine(prevX, prevY, px, py, 0.38f, kInkDark, zBias + 0.15f);
+            prevX = px;
+            prevY = py;
         }
     };
 
     if (style == 0) {
-        // Style 0: Realms 2.5D Deciduous Oak with gnarled root trunk & volumetric boughs
-        // 1. Gnarled bark trunk & root flare in lower center (partially shadowed under canopy)
-        for (int y = 38; y <= 61; ++y) {
-            float t = static_cast<float>(y - 38) / 23.0f;
-            float flare = t * t * 4.5f;
-            int hw = static_cast<int>(3.2f + flare);
+        // Style 0: Sorcery! Hand-Inked Deciduous Oak (Scalloped Pen Lobes & Watercolor Wash)
+        // 1. Hand-inked gnarled trunk & root flares
+        constexpr RGBA8 kBarkLit  {138, 102,  72, 255};
+        constexpr RGBA8 kBarkMid  {102,  72,  48, 255};
+        constexpr RGBA8 kBarkShade{ 68,  44,  28, 255};
+
+        for (int y = 36; y <= 60; ++y) {
+            float t = static_cast<float>(y - 36) / 24.0f;
+            float flare = t * t * 4.8f;
+            int hw = static_cast<int>(3.0f + flare);
             for (int x = 32 - hw; x <= 32 + hw; ++x) {
                 float dx = static_cast<float>(x - 32) / std::max(1.0f, static_cast<float>(hw));
-                float barkGrain = (rand01(x, y, seed + 77u) - 0.5f) * 18.0f;
-                float shade = (1.0f - t * 0.25f) * (dx < 0.0f ? 1.05f : 0.72f);
-                uint8_t r = static_cast<uint8_t>(std::clamp(96.0f * shade + barkGrain, 28.0f, 150.0f));
-                uint8_t g = static_cast<uint8_t>(std::clamp(66.0f * shade + barkGrain * 0.7f, 20.0f, 110.0f));
-                uint8_t b = static_cast<uint8_t>(std::clamp(44.0f * shade + barkGrain * 0.5f, 14.0f, 80.0f));
-                s.setPixelNormal(x, y, RGBA8{r, g, b, 255}, {dx * 0.7f, -0.15f, 0.7f}, 0.45f);
+                float shade = (dx * 0.45f + 0.5f);
+                RGBA8 c = kBarkMid;
+                if (shade < 0.35f) c = kBarkLit;
+                else if (shade > 0.65f) c = kBarkShade;
+                s.blendPixel(x, y, c, {dx * 0.7f, -0.1f, 0.7f}, 0.45f);
             }
         }
 
-        constexpr RGBA8 kOakDeep  { 24,  62,  28, 255};
-        constexpr RGBA8 kOakShade { 38,  96,  36, 255};
-        constexpr RGBA8 kOakMid   { 66, 142,  44, 255};
-        constexpr RGBA8 kOakLit   {118, 188,  54, 255};
-        constexpr RGBA8 kOakSun   {154, 214,  68, 255};
+        // Hand-drawn pen ink bark contour & root fissures
+        s.drawInkBezier(32.0f, 36.0f, 31.0f, 48.0f, 26.0f, 60.0f, 0.8f, 1.2f, kInkDark, 0.48f); // Left root flare
+        s.drawInkBezier(33.0f, 36.0f, 34.0f, 48.0f, 38.0f, 60.0f, 0.8f, 1.2f, kInkDark, 0.48f); // Right root flare
+        s.drawInkBezier(32.0f, 37.0f, 32.5f, 46.0f, 32.0f, 57.0f, 0.6f, 0.7f, kInkDark, 0.48f); // Center bark fissure
+        for (int y = 42; y <= 54; y += 4) {
+            s.drawInkLine(30.0f, static_cast<float>(y), 34.5f, static_cast<float>(y + 1), 0.55f, kInkDark, 0.49f);
+        }
 
-        // Back shadow boughs
-        paintLeafCluster(18.0f, 39.0f, 12.5f, 10.5f, kOakMid, kOakShade, kOakDeep, 0.50f, seed + 1u);
-        paintLeafCluster(46.0f, 39.0f, 12.5f, 10.5f, kOakMid, kOakShade, kOakDeep, 0.50f, seed + 2u);
-        paintLeafCluster(32.0f, 42.0f, 14.0f, 10.0f, kOakMid, kOakShade, kOakDeep, 0.52f, seed + 3u);
+        // 2. Multi-tiered scalloped canopy lobes with watercolor wash
+        constexpr RGBA8 kOakDeep  { 28,  68,  30, 255};
+        constexpr RGBA8 kOakShade { 46, 102,  38, 255};
+        constexpr RGBA8 kOakMid   { 72, 148,  48, 255};
+        constexpr RGBA8 kOakLit   {122, 192,  56, 255};
+        constexpr RGBA8 kOakSun   {156, 218,  72, 255};
 
-        // Mid-canopy lush volume lobes
-        paintLeafCluster(19.0f, 28.0f, 13.0f, 11.5f, kOakLit, kOakMid, kOakShade, 0.65f, seed + 4u);
-        paintLeafCluster(45.0f, 29.0f, 12.5f, 11.0f, kOakLit, kOakMid, kOakShade, 0.64f, seed + 5u);
-        paintLeafCluster(32.0f, 30.0f, 14.5f, 12.0f, kOakLit, kOakMid, kOakShade, 0.72f, seed + 6u);
+        // Tier 1: Background shadow lobes
+        drawScallopedCanopyLobe(20.0f, 38.0f, 11.5f,  9.5f, kOakMid, kOakShade, kOakDeep, 0.50f, seed + 1u);
+        drawScallopedCanopyLobe(44.0f, 38.0f, 11.5f,  9.5f, kOakMid, kOakShade, kOakDeep, 0.50f, seed + 2u);
+        drawScallopedCanopyLobe(32.0f, 40.0f, 12.5f,  9.0f, kOakMid, kOakShade, kOakDeep, 0.52f, seed + 3u);
 
-        // Sun-drenched crown clusters
-        paintLeafCluster(25.0f, 18.0f, 11.5f, 10.0f, kOakSun, kOakLit, kOakMid, 0.82f, seed + 7u);
-        paintLeafCluster(39.0f, 19.0f, 11.0f,  9.5f, kOakSun, kOakLit, kOakMid, 0.80f, seed + 8u);
-        paintLeafCluster(32.0f, 14.0f, 12.0f, 10.0f, kOakSun, kOakLit, kOakMid, 0.88f, seed + 9u);
+        // Tier 2: Mid-canopy voluminous lobes
+        drawScallopedCanopyLobe(18.0f, 27.0f, 12.0f, 10.5f, kOakLit, kOakMid, kOakShade, 0.64f, seed + 4u);
+        drawScallopedCanopyLobe(46.0f, 27.0f, 12.0f, 10.5f, kOakLit, kOakMid, kOakShade, 0.64f, seed + 5u);
+        drawScallopedCanopyLobe(32.0f, 28.0f, 14.0f, 11.5f, kOakLit, kOakMid, kOakShade, 0.70f, seed + 6u);
 
-        // Base grass tuft wrapping the roots
-        paintLeafCluster(32.0f, 59.0f, 11.0f,  3.5f, kOakLit, kOakMid, kOakDeep, 0.58f, seed + 10u);
+        // Tier 3: Sun-drenched crown lobes
+        drawScallopedCanopyLobe(24.0f, 17.0f, 11.0f,  9.5f, kOakSun, kOakLit, kOakMid, 0.80f, seed + 7u);
+        drawScallopedCanopyLobe(40.0f, 17.0f, 11.0f,  9.5f, kOakSun, kOakLit, kOakMid, 0.80f, seed + 8u);
+        drawScallopedCanopyLobe(32.0f, 13.0f, 12.0f,  9.5f, kOakSun, kOakLit, kOakMid, 0.86f, seed + 9u);
+
+        // Base ground grass tufts flanking the roots
+        s.drawInkBezier(25.0f, 60.0f, 23.0f, 57.0f, 20.0f, 56.0f, 0.9f, 0.4f, kOakDeep, 0.42f);
+        s.drawInkBezier(39.0f, 60.0f, 41.0f, 57.0f, 44.0f, 56.0f, 0.9f, 0.4f, kOakDeep, 0.42f);
 
     } else if (style == 1) {
-        // Style 1: Realms 2.5D Layered Boreal Pine / Spruce Cluster
-        constexpr RGBA8 kPineDeep { 16,  46,  32, 255};
-        constexpr RGBA8 kPineShade{ 26,  76,  48, 255};
-        constexpr RGBA8 kPineMid  { 44, 118,  66, 255};
-        constexpr RGBA8 kPineLit  { 82, 164,  84, 255};
+        // Style 1: Sorcery! / Watabou Hand-Inked Boreal Pine Spire
+        constexpr RGBA8 kBarkMid  {102,  72,  48, 255};
+        constexpr RGBA8 kPineDeep { 18,  52,  36, 255};
+        constexpr RGBA8 kPineShade{ 28,  82,  52, 255};
+        constexpr RGBA8 kPineMid  { 48, 126,  72, 255};
+        constexpr RGBA8 kPineLit  { 88, 172,  90, 255};
 
-        auto drawPineBoughTier = [&](float cx, int topY, int botY, float maxW, float zBase, uint32_t tSeed) {
-            for (int y = topY; y <= botY; ++y) {
-                float t = static_cast<float>(y - topY) / std::max(1.0f, static_cast<float>(botY - topY));
-                float branchScallop = 0.78f + 0.22f * std::sin(t * 9.42f + static_cast<float>(tSeed & 3u));
-                float hw = (1.5f + t * maxW) * branchScallop;
-                int x0 = std::max(1, static_cast<int>(cx - hw));
-                int x1 = std::min(kS - 2, static_cast<int>(cx + hw));
-                for (int x = x0; x <= x1; ++x) {
-                    float dx = (static_cast<float>(x) - cx) / std::max(1.0f, hw);
-                    // Hanging needle tufts at bottom of tier
-                    float needleDrop = std::sin(dx * 18.0f + static_cast<float>(tSeed)) * 0.12f;
-                    if (t > 0.88f + needleDrop && std::abs(dx) > 0.2f) continue;
+        // Slender timber trunk
+        s.drawInkBezier(32.0f, 24.0f, 32.0f, 44.0f, 32.0f, 60.0f, 1.4f, 1.8f, kBarkMid, 0.45f);
+        s.drawInkBezier(31.2f, 24.0f, 31.2f, 44.0f, 30.5f, 60.0f, 0.6f, 0.8f, kInkDark, 0.48f);
+        s.drawInkBezier(32.8f, 24.0f, 32.8f, 44.0f, 33.5f, 60.0f, 0.6f, 0.8f, kInkDark, 0.48f);
 
-                    float nNoise = rand01(x, y, tSeed + static_cast<uint32_t>(y));
-                    Vec3f norm{dx * 0.70f, 0.45f - t * 0.55f, std::sqrt(std::max(0.1f, 1.0f - dx * dx * 0.5f))};
-                    RGBA8 col = kPineMid;
-                    if (dx < -0.15f && t < 0.65f) col = kPineLit;
-                    else if (dx > 0.20f || t > 0.78f) col = kPineShade;
-                    if (t > 0.84f || nNoise < 0.18f) col = kPineDeep;
+        auto drawPineTier = [&](float cx, float topY, float botY, float hw, float zBias) {
+            int y0 = static_cast<int>(topY);
+            int y1 = static_cast<int>(botY);
+            for (int y = y0; y <= y1; ++y) {
+                float t = static_cast<float>(y - y0) / std::max(1.0f, botY - topY);
+                float curHw = t * hw * (0.85f + 0.15f * std::sin(t * 3.14159f));
+                for (float dx = -curHw; dx <= curHw; dx += 0.7f) {
+                    float normX = dx / std::max(1.0f, curHw);
+                    RGBA8 c = kPineMid;
+                    if (normX < -0.2f && t < 0.6f) c = kPineLit;
+                    else if (normX > 0.2f || t > 0.75f) c = kPineShade;
+                    if (t > 0.88f) c = kPineDeep;
+                    Vec3f norm{normX * 0.7f, 0.3f - t * 0.4f, 0.8f};
+                    s.blendPixel(static_cast<int>(cx + dx), y, c, norm, zBias + (1.0f - t) * 0.2f);
+                }
+            }
+            // Hand-inked drooping bough outlines & needle hatching
+            s.drawInkBezier(cx, topY, cx - hw * 0.5f, (topY + botY) * 0.5f, cx - hw, botY, 0.7f, 0.8f, kInkDark, zBias + 0.15f);
+            s.drawInkBezier(cx, topY, cx + hw * 0.5f, (topY + botY) * 0.5f, cx + hw, botY, 0.7f, 0.8f, kInkDark, zBias + 0.15f);
+            s.drawInkBezier(cx - hw, botY, cx, botY - 2.0f, cx + hw, botY, 0.7f, 0.7f, kInkDark, zBias + 0.15f);
+            for (float hx = 2.0f; hx < hw * 0.9f; hx += 3.0f) {
+                s.drawInkLine(cx + hx, botY - 3.0f, cx + hx + 1.5f, botY - 0.5f, 0.55f, kInkDark, zBias + 0.18f);
+            }
+        };
 
-                    s.setPixelNormal(x, y, col, norm, zBase + (1.0f - std::abs(dx)) * 0.22f);
+        drawPineTier(32.0f, 40.0f, 57.0f, 17.0f, 0.52f);
+        drawPineTier(32.0f, 27.0f, 43.0f, 14.0f, 0.62f);
+        drawPineTier(32.0f, 15.0f, 29.0f, 10.5f, 0.72f);
+        drawPineTier(32.0f,  5.0f, 17.0f,  6.5f, 0.82f);
+
+    } else if (style == 2) {
+        // Style 2: Sorcery! Hand-Inked Coastal Date Palm
+        constexpr RGBA8 kBarkMid     {118,  86,  58, 255};
+        constexpr RGBA8 kPalmFrondLit {142, 212,  72, 255};
+        constexpr RGBA8 kPalmFrondMid { 78, 168,  54, 255};
+        constexpr RGBA8 kPalmFrondDeep{ 34,  96,  38, 255};
+
+        // Gracefully arched palm trunk
+        s.drawInkBezier(28.0f, 60.0f, 31.0f, 42.0f, 35.0f, 25.0f, 2.0f, 1.2f, kBarkMid, 0.45f);
+        s.drawInkBezier(27.0f, 60.0f, 30.0f, 42.0f, 34.0f, 25.0f, 0.7f, 0.7f, kInkDark, 0.48f);
+        s.drawInkBezier(29.0f, 60.0f, 32.0f, 42.0f, 36.0f, 25.0f, 0.7f, 0.7f, kInkDark, 0.48f);
+        for (float t = 0.15f; t < 0.95f; t += 0.12f) {
+            float it = 1.0f - t;
+            float px = it * it * 28.0f + 2.0f * it * t * 31.0f + t * t * 35.0f;
+            float py = it * it * 60.0f + 2.0f * it * t * 42.0f + t * t * 25.0f;
+            s.drawInkLine(px - 1.8f, py - 0.5f, px + 1.8f, py + 0.5f, 0.55f, kInkDark, 0.50f);
+        }
+
+        auto drawPalmFrond = [&](float x0, float y0, float cx, float cy, float x1, float y1) {
+            s.drawInkBezier(x0, y0, cx, cy, x1, y1, 0.9f, 0.5f, kInkDark, 0.70f);
+            for (int i = 1; i <= 8; ++i) {
+                float t = static_cast<float>(i) / 9.0f;
+                float it = 1.0f - t;
+                float px = it * it * x0 + 2.0f * it * t * cx + t * t * x1;
+                float py = it * it * y0 + 2.0f * it * t * cy + t * t * y1;
+                float dx = 2.0f * it * (cx - x0) + 2.0f * t * (x1 - cx);
+                float dy = 2.0f * it * (cy - y0) + 2.0f * t * (y1 - cy);
+                float len = std::hypot(dx, dy);
+                if (len > 0.1f) {
+                    float nx = -dy / len * (4.5f * (1.0f - t * 0.4f));
+                    float ny =  dx / len * (4.5f * (1.0f - t * 0.4f));
+                    RGBA8 c = (i % 2 == 0) ? kPalmFrondLit : kPalmFrondMid;
+                    s.drawInkLine(px, py, px + nx, py + ny, 0.6f, c, 0.68f);
+                    s.drawInkLine(px, py, px - nx, py - ny, 0.6f, kPalmFrondDeep, 0.66f);
                 }
             }
         };
 
-        // Secondary background pine
-        drawPineBoughTier(43.0f, 36, 59, 14.5f, 0.50f, seed + 21u);
-        drawPineBoughTier(43.0f, 24, 42, 11.5f, 0.56f, seed + 22u);
-        drawPineBoughTier(43.0f, 13, 28,  8.5f, 0.62f, seed + 23u);
-
-        // Primary foreground tall pine
-        drawPineBoughTier(24.0f, 34, 60, 17.5f, 0.65f, seed + 11u);
-        drawPineBoughTier(24.0f, 21, 40, 14.0f, 0.72f, seed + 12u);
-        drawPineBoughTier(24.0f, 10, 26, 10.5f, 0.78f, seed + 13u);
-        drawPineBoughTier(24.0f,  4, 15,  6.5f, 0.85f, seed + 14u);
-
-    } else if (style == 2) {
-        // Style 2: Coastal Palm & Tropical Shrub
-        constexpr RGBA8 kTropLit  {136, 208,  64, 255};
-        constexpr RGBA8 kTropMid  { 68, 156,  48, 255};
-        constexpr RGBA8 kTropDeep { 28,  86,  36, 255};
-
-        paintLeafCluster(32.0f, 49.0f, 14.0f, 9.0f, kTropLit, kTropMid, kTropDeep, 0.60f, seed + 30u);
-        paintLeafCluster(21.0f, 46.0f, 11.0f, 8.0f, kTropLit, kTropMid, kTropDeep, 0.66f, seed + 31u);
-        paintLeafCluster(43.0f, 46.0f, 11.0f, 8.0f, kTropLit, kTropMid, kTropDeep, 0.66f, seed + 32u);
-        paintLeafCluster(32.0f, 28.0f, 15.0f, 11.0f, kTropLit, kTropMid, kTropDeep, 0.78f, seed + 33u);
+        drawPalmFrond(35.0f, 25.0f, 20.0f, 15.0f,  8.0f, 28.0f);
+        drawPalmFrond(35.0f, 25.0f, 24.0f, 10.0f, 16.0f, 18.0f);
+        drawPalmFrond(35.0f, 25.0f, 34.0f,  6.0f, 32.0f, 10.0f);
+        drawPalmFrond(35.0f, 25.0f, 46.0f, 10.0f, 52.0f, 18.0f);
+        drawPalmFrond(35.0f, 25.0f, 52.0f, 16.0f, 58.0f, 28.0f);
 
     } else {
-        // Style 3: Realms-style 2.5D Grass Blades & Wildflower Tuft (StandeeGrassPatch)
-        // Generates ~26 sweeping curved grass blades with per-blade 3D normals and sunlit tips
-        for (int b = 0; b < 28; ++b) {
-            uint32_t bSeed = seed + static_cast<uint32_t>(b * 31);
-            float baseX = 10.0f + rand01(b, 0, bSeed) * 44.0f;
-            float baseY = 56.0f + rand01(b, 1, bSeed) * 5.0f;
-            float bladeH = 18.0f + rand01(b, 2, bSeed) * 24.0f;
-            float leanX  = (baseX - 32.0f) * 0.42f + (rand01(b, 3, bSeed) - 0.5f) * 12.0f;
-
-            int steps = static_cast<int>(bladeH * 1.6f);
-            for (int st = 0; st <= steps; ++st) {
-                float t = static_cast<float>(st) / static_cast<float>(steps); // 0 = root, 1 = tip
-                float bx = baseX + leanX * (t * t);
-                float by = baseY - bladeH * t;
-                float halfW = (1.0f - t * 0.78f) * 1.85f;
-
-                // Smooth gradient from deep mossy AO at root to vibrant sunlit emerald/chartreuse at tip
-                uint8_t r = static_cast<uint8_t>(std::clamp(28.0f + t * 98.0f, 20.0f, 160.0f));
-                uint8_t g = static_cast<uint8_t>(std::clamp(74.0f + t * 134.0f, 50.0f, 230.0f));
-                uint8_t bl = static_cast<uint8_t>(std::clamp(24.0f + t * 34.0f, 18.0f, 80.0f));
-
-                Vec3f bladeNorm{leanX * 0.04f, 0.35f + t * 0.55f, 0.78f};
-                for (float dx = -halfW; dx <= halfW; dx += 0.65f) {
-                    s.setPixelNormal(static_cast<int>(std::round(bx + dx)),
-                                     static_cast<int>(std::round(by)),
-                                     RGBA8{r, g, bl, 255},
-                                     bladeNorm,
-                                     0.50f + t * 0.35f);
+        // Style 3: Sorcery! / Watabou Minimalist Hand-Drawn Grass Tuft & Wildflowers
+        auto drawCartoGrassTuft = [&](float bx, float by, float scale, uint32_t tuftSeed) {
+            // 1. Soft watercolor sage pool at base
+            for (int y = static_cast<int>(by - 4.0f); y <= static_cast<int>(by + 2.0f); ++y) {
+                for (int x = static_cast<int>(bx - 7.0f * scale); x <= static_cast<int>(bx + 7.0f * scale); ++x) {
+                    float dx = (static_cast<float>(x) - bx) / (7.0f * scale);
+                    float dy = (static_cast<float>(y) - by) / 3.0f;
+                    float d = dx * dx + dy * dy;
+                    if (d <= 1.0f) {
+                        float a = (1.0f - d) * 115.0f;
+                        s.blendPixel(x, y, RGBA8{142, 196, 110, static_cast<uint8_t>(a)}, {0.0f, 0.3f, 0.95f}, 0.38f);
+                    }
                 }
             }
-            // Occasional tiny sunlit wildflower / clover blossom at blade tip
-            if (b % 7 == 0) {
-                float fx = baseX + leanX;
-                float fy = baseY - bladeH;
-                RGBA8 flCol = (b % 14 == 0) ? RGBA8{252, 232, 92, 255} : RGBA8{245, 248, 252, 255};
-                s.fillCircle(fx, fy, 1.8f, flCol, 0.90f);
+
+            // 2. Slender hand-inked blade curves (fountain pen strokes)
+            constexpr RGBA8 kBladeInk{36, 52, 28, 255};
+            s.drawInkBezier(bx, by, bx - 1.5f * scale, by - 10.0f * scale, bx - 2.5f * scale, by - 18.0f * scale,
+                            1.2f, 0.5f, kBladeInk, 0.55f);
+            s.drawInkBezier(bx, by, bx - 5.0f * scale, by - 8.0f * scale, bx - 9.0f * scale, by - 14.0f * scale,
+                            1.1f, 0.45f, kBladeInk, 0.52f);
+            s.drawInkBezier(bx, by, bx - 7.0f * scale, by - 4.0f * scale, bx - 11.5f * scale, by - 7.0f * scale,
+                            1.0f, 0.4f, kBladeInk, 0.48f);
+            s.drawInkBezier(bx, by, bx + 4.5f * scale, by - 7.5f * scale, bx + 8.5f * scale, by - 15.0f * scale,
+                            1.1f, 0.45f, kBladeInk, 0.52f);
+            s.drawInkBezier(bx, by, bx + 6.5f * scale, by - 4.0f * scale, bx + 11.0f * scale, by - 6.5f * scale,
+                            1.0f, 0.4f, kBladeInk, 0.48f);
+
+            // 3. Stipple ink dots around root
+            s.drawInkDot(bx - 3.5f * scale, by + 0.5f, 0.55f, kInkDark, 0.36f);
+            s.drawInkDot(bx + 4.0f * scale, by + 0.8f, 0.55f, kInkDark, 0.36f);
+            s.drawInkDot(bx + 1.2f * scale, by + 1.2f, 0.55f, kInkDark, 0.36f);
+
+            // 4. Charming hand-inked wildflower dots
+            if ((tuftSeed & 1u) == 0u) {
+                float fx = bx + 8.5f * scale;
+                float fy = by - 15.0f * scale;
+                s.drawInkDot(fx, fy, 1.4f, RGBA8{250, 218, 64, 255}, 0.85f);
+                s.drawInkDot(fx, fy, 0.6f, kInkDark, 0.88f);
+            } else {
+                float fx = bx - 2.5f * scale;
+                float fy = by - 18.0f * scale;
+                s.drawInkDot(fx, fy, 1.4f, RGBA8{96, 160, 240, 255}, 0.85f);
+                s.drawInkDot(fx, fy, 0.6f, kInkDark, 0.88f);
             }
-        }
+        };
+
+        drawCartoGrassTuft(25.0f, 57.0f, 1.15f, seed + 1u);
+        drawCartoGrassTuft(43.0f, 58.0f, 0.90f, seed + 2u);
+    }
+
+    if (style != 0) {
+        s.applyInkOutlineAndPaperCutout();
     }
 }
 
-// Synthesizes 2.5D Tabletop Settlement Icons (Keep, Hamlet, Windmill, Lighthouse, Monastery, Harbor)
+// Synthesizes 2.5D Watabou-Style Tabletop Settlement Icons
+// Crisp hipped/conical roofs with ink ridges, stone-hatched curtain walls, and amber-lit windows.
 void synthSettlementStandee(LayerSlice& s, int kind) {
     s.clear();
-    RGBA8 wallLit   {248, 248, 252, 255};
-    RGBA8 wallShade {205, 214, 226, 255};
-    RGBA8 roofRed   {214,  78,  52, 255};
-    RGBA8 roofSlate { 76,  96, 122, 255};
-    RGBA8 goldGlow  {255, 212,  88, 255};
+    constexpr RGBA8 kWallLit    {244, 242, 238, 255};
+    constexpr RGBA8 kWallMid    {216, 212, 204, 255};
+    constexpr RGBA8 kWallShade  {176, 172, 164, 255};
+    constexpr RGBA8 kRoofRedLit {218,  84,  56, 255};
+    constexpr RGBA8 kRoofRedShd {162,  52,  34, 255};
+    constexpr RGBA8 kRoofSlateLit{ 94, 118, 146, 255};
+    constexpr RGBA8 kRoofSlateShd{ 62,  78, 102, 255};
+    constexpr RGBA8 kWindowGold {255, 218,  84, 255};
 
-    auto drawGabledBox = [&](int x0, int x1, int roofTopY, int eaveY, int baseY, RGBA8 roofCol) {
-        int midX = (x0 + x1) / 2;
-        // Walls
-        for (int y = eaveY; y <= baseY; ++y) {
-            for (int x = x0; x <= x1; ++x) {
-                RGBA8 c = (x < midX) ? wallLit : wallShade;
-                if (x >= midX && ((x + y) % 4 == 0)) c = kInkMid;
-                s.setPixel(x, y, c, 0.65f);
+    auto drawWatabouBuilding = [&](float x0, float x1, float roofTopY, float eaveY, float baseY,
+                                   RGBA8 roofLit, RGBA8 roofShd, bool halfTimbered) {
+        float midX = (x0 + x1) * 0.5f;
+        int ix0 = static_cast<int>(x0), ix1 = static_cast<int>(x1);
+        int ieave = static_cast<int>(eaveY), ibase = static_cast<int>(baseY);
+
+        // 1. Facade Wall with stone masonry or plaster wash
+        for (int y = ieave; y <= ibase; ++y) {
+            for (int x = ix0; x <= ix1; ++x) {
+                float dx = (static_cast<float>(x) - midX) / ((x1 - x0) * 0.5f);
+                RGBA8 c = (dx < -0.1f) ? kWallLit : (dx > 0.2f ? kWallShade : kWallMid);
+                s.blendPixel(x, y, c, {dx * 0.6f, 0.0f, 0.8f}, 0.62f);
             }
         }
-        // Pitched Roof
-        for (int y = roofTopY; y <= eaveY; ++y) {
-            float t = static_cast<float>(y - roofTopY) / std::max(1.0f, static_cast<float>(eaveY - roofTopY));
-            int hw = static_cast<int>(t * ((x1 - x0) / 2 + 3));
-            for (int x = midX - hw; x <= midX + hw; ++x) {
-                RGBA8 c = roofCol;
-                if (y % 3 == 0) c = RGBA8{static_cast<uint8_t>(c.r * 0.8f), static_cast<uint8_t>(c.g * 0.8f), static_cast<uint8_t>(c.b * 0.8f), 255};
-                s.setPixel(x, y, c, 0.8f);
+        s.drawInkLine(x0, eaveY, x0, baseY, 0.8f, kInkDark, 0.65f);
+        s.drawInkLine(x1, eaveY, x1, baseY, 0.8f, kInkDark, 0.65f);
+        s.drawInkLine(x0, baseY, x1, baseY, 0.8f, kInkDark, 0.65f);
+
+        if (halfTimbered) {
+            float midBeamY = (eaveY + baseY) * 0.5f;
+            s.drawInkLine(x0, midBeamY, x1, midBeamY, 0.8f, RGBA8{92, 64, 42, 255}, 0.68f);
+            s.drawInkLine(x0 + 2.0f, eaveY, midX, midBeamY, 0.65f, RGBA8{92, 64, 42, 255}, 0.68f);
+            s.drawInkLine(x1 - 2.0f, eaveY, midX, midBeamY, 0.65f, RGBA8{92, 64, 42, 255}, 0.68f);
+        } else {
+            for (float y = eaveY + 4.0f; y < baseY - 2.0f; y += 4.0f) {
+                s.drawInkLine(x0 + 2.0f, y, x1 - 2.0f, y, 0.45f, kInkMid, 0.64f);
             }
         }
-        // Glowing arched window
-        s.fillRect(midX - 2, (eaveY + baseY) / 2 - 2, midX + 2, (eaveY + baseY) / 2 + 2, goldGlow, 0.7f, 0.95f);
+
+        // 2. Crisp Hipped/Pitched Roof
+        int iroofTop = static_cast<int>(roofTopY);
+        for (int y = iroofTop; y <= ieave; ++y) {
+            float t = static_cast<float>(y - iroofTop) / std::max(1.0f, eaveY - roofTopY);
+            float curHw = t * ((x1 - x0) * 0.5f + 2.5f);
+            for (float x = midX - curHw; x <= midX + curHw; x += 0.7f) {
+                float dx = (x - midX) / std::max(1.0f, curHw);
+                RGBA8 c = (dx < 0.0f) ? roofLit : roofShd;
+                s.blendPixel(static_cast<int>(x), y, c, {dx * 0.7f, 0.3f, 0.7f}, 0.78f);
+            }
+        }
+        s.drawInkLine(midX, roofTopY, x0 - 2.0f, eaveY, 0.85f, kInkDark, 0.82f);
+        s.drawInkLine(midX, roofTopY, x1 + 2.0f, eaveY, 0.85f, kInkDark, 0.82f);
+        s.drawInkLine(x0 - 2.5f, eaveY, x1 + 2.5f, eaveY, 0.85f, kInkDark, 0.82f);
+        s.drawInkLine(midX, roofTopY, midX, eaveY, 0.65f, kInkDark, 0.82f);
+
+        // 3. Cozy Glowing Arched Window
+        float winY = (eaveY + baseY) * 0.5f;
+        s.fillCircle(midX, winY, 2.5f, kWindowGold, 0.75f, 0.95f);
+        s.drawInkLine(midX - 2.5f, winY, midX + 2.5f, winY, 0.5f, kInkDark, 0.80f);
+        s.drawInkLine(midX, winY - 2.5f, midX, winY + 2.5f, 0.5f, kInkDark, 0.80f);
+    };
+
+    auto drawRoundTower = [&](float cx, float topY, float botY, float r, RGBA8 roofLit, RGBA8 roofShd) {
+        int itop = static_cast<int>(topY), ibot = static_cast<int>(botY);
+        for (int y = itop; y <= ibot; ++y) {
+            for (float x = cx - r; x <= cx + r; x += 0.7f) {
+                float dx = (x - cx) / r;
+                float nz = std::sqrt(std::max(0.1f, 1.0f - dx * dx));
+                RGBA8 c = (dx < -0.2f) ? kWallLit : (dx > 0.2f ? kWallShade : kWallMid);
+                s.blendPixel(static_cast<int>(x), y, c, {dx * 0.8f, 0.0f, nz}, 0.68f);
+            }
+        }
+        s.drawInkLine(cx - r, topY, cx - r, botY, 0.85f, kInkDark, 0.72f);
+        s.drawInkLine(cx + r, topY, cx + r, botY, 0.85f, kInkDark, 0.72f);
+
+        // Crenellations
+        for (float x = cx - r; x < cx + r; x += 3.0f) {
+            s.drawInkLine(x, topY - 2.5f, x + 1.5f, topY - 2.5f, 0.8f, kWallLit, 0.78f);
+        }
+
+        // Conical Roof Cap
+        float capTopY = topY - r * 1.6f;
+        int icapTop = static_cast<int>(capTopY);
+        for (int y = icapTop; y <= itop; ++y) {
+            float t = static_cast<float>(y - icapTop) / std::max(1.0f, topY - capTopY);
+            float curR = t * (r + 1.5f);
+            for (float x = cx - curR; x <= cx + curR; x += 0.7f) {
+                float dx = (x - cx) / std::max(1.0f, curR);
+                RGBA8 c = (dx < 0.0f) ? roofLit : roofShd;
+                s.blendPixel(static_cast<int>(x), y, c, {dx * 0.7f, 0.3f, 0.7f}, 0.84f);
+            }
+        }
+        s.drawInkLine(cx, capTopY, cx - r - 1.5f, topY, 0.85f, kInkDark, 0.86f);
+        s.drawInkLine(cx, capTopY, cx + r + 1.5f, topY, 0.85f, kInkDark, 0.86f);
+        s.drawInkLine(cx - r - 1.5f, topY, cx + r + 1.5f, topY, 0.85f, kInkDark, 0.86f);
     };
 
     if (kind == 0) {
-        // Citadel Keep / Lowmillburg Castle: Twin crenellated towers + central keep + crimson banner
-        s.fillRect(10, 26, 22, 60, wallShade, 0.6f);
-        s.fillRect(42, 26, 54, 60, wallShade, 0.6f);
-        drawGabledBox(20, 44, 10, 24, 60, roofRed);
-        // Crenellations
-        for (int x = 10; x <= 54; x += 4) {
-            s.fillRect(x, 22, x + 2, 26, wallLit, 0.75f);
-        }
-        // Banner pennant at peak
-        s.drawLine(32.0f, 3.0f, 32.0f, 11.0f, 1.0f, kInkDark, 0.8f);
-        s.fillRect(33, 4, 42, 8, roofRed, 0.8f);
+        // Watabou Citadel Keep: Central high keep flanked by twin crenellated round towers
+        drawRoundTower(16.0f, 26.0f, 60.0f, 6.5f, kRoofSlateLit, kRoofSlateShd);
+        drawRoundTower(48.0f, 26.0f, 60.0f, 6.5f, kRoofSlateLit, kRoofSlateShd);
+        drawWatabouBuilding(18.0f, 46.0f, 8.0f, 22.0f, 60.0f, kRoofRedLit, kRoofRedShd, false);
+        // Central portcullis gate arch
+        s.fillCircle(32.0f, 52.0f, 5.0f, kInkDark, 0.70f);
+        s.drawInkLine(27.0f, 52.0f, 27.0f, 60.0f, 0.8f, kInkDark, 0.72f);
+        s.drawInkLine(37.0f, 52.0f, 37.0f, 60.0f, 0.8f, kInkDark, 0.72f);
+        // Keep peak heraldic pennant
+        s.drawInkLine(32.0f, 2.0f, 32.0f, 8.0f, 0.9f, kInkDark, 0.90f);
+        s.drawInkBezier(32.0f, 2.0f, 38.0f, 1.5f, 44.0f, 4.0f, 1.1f, 0.5f, kRoofRedLit, 0.92f);
+
     } else if (kind == 1) {
-        // Hamlet Cottage Cluster (Coldheartfield / Oakenford)
-        drawGabledBox(10, 32, 22, 34, 60, roofRed);
-        drawGabledBox(26, 52, 16, 30, 60, roofRed);
+        // Hamlet Gabled Cottages (Watabou half-timbered village style)
+        drawWatabouBuilding(8.0f, 32.0f, 22.0f, 35.0f, 60.0f, kRoofRedLit, kRoofRedShd, true);
+        drawWatabouBuilding(28.0f, 54.0f, 16.0f, 30.0f, 60.0f, kRoofRedLit, kRoofRedShd, true);
+        s.drawInkLine(14.0f, 20.0f, 14.0f, 26.0f, 1.4f, kWallShade, 0.82f);
+        s.drawInkBezier(14.0f, 19.0f, 11.0f, 13.0f, 17.0f, 8.0f, 0.7f, 1.3f, RGBA8{210, 214, 220, 180}, 0.88f);
+
     } else if (kind == 2) {
-        // Windmill with 4 lattice sails
-        drawGabledBox(22, 42, 18, 30, 60, roofRed);
-        // Crossed windmill sails
-        s.drawLine(10.0f, 10.0f, 54.0f, 44.0f, 2.0f, RGBA8{250, 248, 240, 255}, 0.9f);
-        s.drawLine(54.0f, 10.0f, 10.0f, 44.0f, 2.0f, RGBA8{250, 248, 240, 255}, 0.9f);
-        s.drawLine(32.0f, 8.0f, 32.0f, 46.0f, 1.6f, RGBA8{160, 110, 70, 255}, 0.9f);
+        // Watabou Rural Timber Windmill
+        drawRoundTower(32.0f, 22.0f, 60.0f, 10.0f, kRoofRedLit, kRoofRedShd);
+        constexpr RGBA8 kSailWhite{246, 244, 238, 255};
+        auto drawLatticeSail = [&](float x0, float y0, float x1, float y1) {
+            s.drawInkLine(x0, y0, x1, y1, 1.1f, RGBA8{102, 70, 44, 255}, 0.92f);
+            s.drawInkLine(x0, y0, x1, y1, 0.6f, kSailWhite, 0.94f);
+            for (float t = 0.25f; t < 0.95f; t += 0.22f) {
+                float px = x0 + (x1 - x0) * t;
+                float py = y0 + (y1 - y0) * t;
+                float dx = (y1 - y0) * 0.12f;
+                float dy = -(x1 - x0) * 0.12f;
+                s.drawInkLine(px - dx, py - dy, px + dx, py + dy, 0.5f, kSailWhite, 0.95f);
+            }
+        };
+        drawLatticeSail(32.0f, 20.0f, 10.0f, 10.0f);
+        drawLatticeSail(32.0f, 20.0f, 54.0f, 10.0f);
+        drawLatticeSail(32.0f, 20.0f, 54.0f, 38.0f);
+        drawLatticeSail(32.0f, 20.0f, 10.0f, 38.0f);
+        s.fillCircle(32.0f, 20.0f, 2.5f, RGBA8{82, 54, 32, 255}, 0.98f);
+
     } else if (kind == 3) {
-        // Coastal Lighthouse (Stormpool / Beacon Isle)
+        // Coastal Beacon Lighthouse
         for (int y = 14; y <= 60; ++y) {
             float t = static_cast<float>(y - 14) / 46.0f;
-            int hw = 5 + static_cast<int>(t * 6.0f);
-            bool stripe = ((y / 7) % 2 == 0);
-            RGBA8 c = stripe ? wallLit : roofRed;
-            s.fillRect(32 - hw, y, 32 + hw, y, c, 0.75f);
+            float hw = 4.5f + t * 6.5f;
+            bool stripe = ((y / 8) % 2 == 0);
+            RGBA8 c = stripe ? kWallLit : kRoofRedLit;
+            for (float x = 32.0f - hw; x <= 32.0f + hw; x += 0.7f) {
+                float dx = (x - 32.0f) / hw;
+                s.blendPixel(static_cast<int>(x), y, c, {dx * 0.7f, 0.0f, 0.7f}, 0.75f);
+            }
         }
-        s.fillCircle(32.0f, 12.0f, 5.5f, goldGlow, 0.95f, 1.0f);
-        drawGabledBox(24, 40, 4, 9, 10, roofSlate);
+        s.drawInkLine(27.5f, 14.0f, 21.0f, 60.0f, 0.85f, kInkDark, 0.78f);
+        s.drawInkLine(36.5f, 14.0f, 43.0f, 60.0f, 0.85f, kInkDark, 0.78f);
+        s.fillCircle(32.0f, 11.5f, 5.0f, kWindowGold, 0.95f, 1.0f);
+        drawWatabouBuilding(25.0f, 39.0f, 4.0f, 8.5f, 11.0f, kRoofSlateLit, kRoofSlateShd, false);
+
     } else if (kind == 4) {
-        // Alpine Monastery Spire
-        drawGabledBox(18, 46, 22, 36, 60, roofSlate);
-        drawGabledBox(26, 38,  5, 22, 36, roofSlate);
+        // Alpine Sanctuary Monastery Spire
+        drawWatabouBuilding(18.0f, 46.0f, 24.0f, 38.0f, 60.0f, kRoofSlateLit, kRoofSlateShd, false);
+        drawWatabouBuilding(27.0f, 37.0f,  4.0f, 22.0f, 38.0f, kRoofSlateLit, kRoofSlateShd, false);
+        s.fillCircle(32.0f, 30.0f, 3.5f, kWindowGold, 0.85f, 0.90f);
+
     } else {
-        // Port Harbor Pier & Warehouse (Stormpool)
-        drawGabledBox(14, 44, 20, 32, 56, roofRed);
-        s.fillRect(8, 54, 56, 60, RGBA8{132, 96, 62, 255}, 0.5f);
+        // Port Harbor Pier & Timber Warehouse
+        drawWatabouBuilding(12.0f, 42.0f, 18.0f, 30.0f, 54.0f, kRoofRedLit, kRoofRedShd, true);
+        s.drawInkLine(6.0f, 54.0f, 58.0f, 54.0f, 1.8f, RGBA8{118, 82, 54, 255}, 0.55f);
+        for (float px = 10.0f; px <= 54.0f; px += 10.0f) {
+            s.drawInkLine(px, 54.0f, px, 61.0f, 1.2f, RGBA8{78, 52, 32, 255}, 0.52f);
+        }
     }
 
-    s.drawLine(6.0f, 60.0f, 58.0f, 60.0f, 1.2f, kInkDark, 0.4f);
+    s.drawInkLine(6.0f, 60.0f, 58.0f, 60.0f, 1.0f, kInkDark, 0.40f);
     s.applyInkOutlineAndPaperCutout();
 }
 
-#include "hero_sprite_data.inl"
-#include "ship_sprite_data.inl"
-
-// Synthesizes Cat Quest Hero, Companion, Sailing Caravel, Monsters & Dungeon Portals
+// Synthesizes Hand-Drawn Sorcery! Tabletop Adventurer Pawn, Antique Caravel, Waypoint Flags & Dungeon Props
 void synthCharacterOrPropStandee(LayerSlice& s, uint16_t layer) {
     s.clear();
     if (layer == InkLayer::StandeeHeroCat) {
-        // 16-bit Pixel Art Battle-Mage Adventurer (Blue Hooded Cloak, Steel Pauldrons, Wizard Staff with Radiant Orb)
-        for (int y = 0; y < kS; ++y) {
-            for (int x = 0; x < kS; ++x) {
-                uint32_t p = kHeroSpriteData[y * kS + x];
-                uint8_t a = static_cast<uint8_t>((p >> 24) & 0xFF);
-                if (a < 64) continue;
-                uint8_t r = static_cast<uint8_t>((p >> 16) & 0xFF);
-                uint8_t g = static_cast<uint8_t>((p >>  8) & 0xFF);
-                uint8_t b = static_cast<uint8_t>( p        & 0xFF);
-                float h = 0.5f;
-                float em = 0.0f;
-                // Radiant crystal orb on wooden staff emits light
-                if (r > 200 && g > 220 && b > 230 && y < 18) {
-                    h = 0.95f;
-                    em = 0.95f;
-                } else if (r > 195 && g > 195 && b > 195 && x >= 36 && x <= 46 && y >= 14 && y <= 24) {
-                    h = 0.85f; // Polished steel pauldron glint
-                } else if (y < 24) {
-                    h = 0.72f; // Hair & face
+        // Sorcery!-Style Tabletop Pewter Adventurer Miniature Pawn on Turned Wood/Bronze Counter Base
+        constexpr RGBA8 kBaseRimLit {210, 162, 108, 255};
+        constexpr RGBA8 kBaseWoodMid{148, 104,  64, 255};
+        constexpr RGBA8 kBaseWoodDrk{ 86,  56,  32, 255};
+
+        // 1. Turned wooden/bronze token counter base
+        for (int y = 57; y <= 62; ++y) {
+            for (int x = 16; x <= 48; ++x) {
+                float dx = (static_cast<float>(x) - 32.0f) / 15.0f;
+                float dy = (static_cast<float>(y) - 59.5f) / 2.5f;
+                if (dx * dx + dy * dy <= 1.0f) {
+                    s.blendPixel(x, y, RGBA8{20, 15, 10, 160}, {0.0f, 1.0f, 0.0f}, 0.20f);
                 }
-                s.setPixel(x, y, RGBA8{r, g, b, a}, h, em);
             }
         }
+        for (int y = 52; y <= 60; ++y) {
+            for (int x = 18; x <= 46; ++x) {
+                float dx = (static_cast<float>(x) - 32.0f) / 13.5f;
+                float dy = (static_cast<float>(y) - 56.0f) / 4.0f;
+                float d2 = dx * dx + dy * dy;
+                if (d2 <= 1.0f) {
+                    float nz = std::sqrt(std::max(0.1f, 1.0f - d2));
+                    float t = (dy * 0.6f + dx * 0.4f);
+                    RGBA8 c = kBaseWoodMid;
+                    if (t < -0.15f) c = kBaseRimLit;
+                    else if (t > 0.15f) c = kBaseWoodDrk;
+                    s.blendPixel(x, y, c, {dx * 0.7f, -dy * 0.7f, nz}, 0.42f + nz * 0.18f);
+                }
+            }
+        }
+        s.drawInkBezier(18.5f, 56.0f, 32.0f, 60.5f, 45.5f, 56.0f, 0.9f, 0.9f, kInkDark, 0.55f);
+        s.drawInkBezier(18.5f, 56.0f, 32.0f, 51.5f, 45.5f, 56.0f, 0.7f, 0.7f, kInkDark, 0.55f);
+        s.drawInkBezier(21.0f, 55.5f, 32.0f, 58.5f, 43.0f, 55.5f, 0.5f, 0.5f, kBaseRimLit, 0.58f);
+
+        // 2. Pewter Adventurer Figurine (Silver/steel miniature with pen hatching)
+        constexpr RGBA8 kPewterHi   {248, 250, 255, 255};
+        constexpr RGBA8 kPewterLit  {216, 224, 234, 255};
+        constexpr RGBA8 kPewterMid  {164, 176, 192, 255};
+        constexpr RGBA8 kPewterShade{108, 120, 136, 255};
+        constexpr RGBA8 kCloakBlue  { 56,  82, 128, 255};
+        constexpr RGBA8 kCloakShade { 32,  48,  82, 255};
+
+        // Boots & Greaves
+        s.drawInkBezier(28.0f, 44.0f, 27.5f, 50.0f, 26.5f, 55.5f, 2.0f, 2.4f, kPewterMid, 0.65f);
+        s.drawInkBezier(35.0f, 44.0f, 35.5f, 50.0f, 36.5f, 55.5f, 2.0f, 2.4f, kPewterMid, 0.65f);
+        s.drawInkLine(24.5f, 55.5f, 28.5f, 55.5f, 0.8f, kInkDark, 0.68f);
+        s.drawInkLine(34.5f, 55.5f, 38.5f, 55.5f, 0.8f, kInkDark, 0.68f);
+
+        // Flowing Traveler Cloak
+        for (int y = 20; y <= 48; ++y) {
+            float t = static_cast<float>(y - 20) / 28.0f;
+            float leftW = 5.0f + t * 9.5f;
+            float rightW = 4.0f + t * 4.0f;
+            for (float x = 32.0f - leftW; x <= 32.0f + rightW; x += 0.7f) {
+                float dx = (x - 32.0f) / leftW;
+                RGBA8 c = (dx < -0.2f) ? kCloakBlue : kCloakShade;
+                s.blendPixel(static_cast<int>(x), y, c, {-0.3f, 0.2f, 0.9f}, 0.55f);
+            }
+        }
+        s.drawInkBezier(29.0f, 20.0f, 24.0f, 34.0f, 18.0f, 48.0f, 0.8f, 1.1f, kInkDark, 0.58f);
+        s.drawInkBezier(31.0f, 22.0f, 27.0f, 36.0f, 23.0f, 48.0f, 0.6f, 0.8f, kInkDark, 0.58f);
+        s.drawInkBezier(18.0f, 48.0f, 26.0f, 49.5f, 34.0f, 47.0f, 0.7f, 0.7f, kInkDark, 0.58f);
+
+        // Armored Torso / Mail Hauberk
+        for (int y = 24; y <= 40; ++y) {
+            int hw = (y < 32) ? 6 : 5;
+            for (int x = 32 - hw; x <= 32 + hw; ++x) {
+                float dx = static_cast<float>(x - 32) / static_cast<float>(hw);
+                RGBA8 c = (dx < -0.2f) ? kPewterLit : (dx > 0.2f ? kPewterShade : kPewterMid);
+                s.blendPixel(x, y, c, {dx * 0.7f, 0.0f, 0.7f}, 0.72f);
+            }
+        }
+        s.drawInkLine(27.0f, 37.0f, 37.0f, 37.0f, 1.0f, RGBA8{78, 52, 34, 255}, 0.74f);
+        s.drawInkDot(32.0f, 37.0f, 1.2f, RGBA8{236, 186, 68, 255}, 0.78f);
+
+        // Pewter Pauldrons
+        s.fillCircle(25.5f, 24.0f, 4.0f, kPewterLit, 0.82f);
+        s.fillCircle(38.5f, 24.0f, 4.0f, kPewterMid, 0.80f);
+        s.drawInkDot(24.5f, 22.5f, 1.2f, kPewterHi, 0.88f);
+        s.drawInkDot(37.5f, 22.5f, 1.0f, kPewterHi, 0.86f);
+
+        // Bascinet Helm / Hood
+        s.fillCircle(32.0f, 16.0f, 5.0f, kPewterMid, 0.84f);
+        s.drawInkDot(30.5f, 14.5f, 1.4f, kPewterHi, 0.90f);
+        s.drawInkLine(30.0f, 16.5f, 34.0f, 16.5f, 0.65f, kInkDark, 0.86f);
+
+        // Hero's Drawn Broadsword
+        s.drawInkDot(39.0f, 32.0f, 1.5f, kPewterShade, 0.78f);
+        s.drawInkLine(36.5f, 30.5f, 42.0f, 33.5f, 1.0f, RGBA8{214, 172, 78, 255}, 0.80f);
+        s.drawInkDot(36.0f, 33.0f, 1.0f, RGBA8{214, 172, 78, 255}, 0.80f);
+        s.drawInkLine(40.0f, 31.0f, 48.0f, 11.0f, 1.3f, kPewterLit, 0.88f);
+        s.drawInkLine(39.5f, 31.0f, 47.5f, 11.0f, 0.6f, kPewterHi, 0.92f);
+        s.drawInkLine(40.5f, 31.0f, 48.5f, 11.0f, 0.5f, kPewterShade, 0.88f);
+        s.drawInkDot(48.0f, 11.0f, 0.8f, kPewterHi, 0.98f);
+
     } else if (layer == InkLayer::StandeeHeroCompanion) {
-        // Floating Arcane Cartographer Spirit Orb / Owl-Mage
+        // Floating Arcane Spirit Familiar
         s.fillCircle(32.0f, 30.0f, 9.0f, RGBA8{110, 205, 255, 255}, 0.9f, 0.85f);
         s.fillCircle(32.0f, 30.0f, 5.0f, RGBA8{245, 250, 255, 255}, 0.95f, 1.0f);
+        s.drawInkBezier(24.0f, 38.0f, 32.0f, 44.0f, 40.0f, 38.0f, 0.8f, 0.8f, RGBA8{140, 225, 255, 255}, 0.90f);
+
     } else if (layer == InkLayer::StandeeShipCaravel) {
-        // High-Fidelity Hand-Inked Antique Caravel Flagship
-        // Billowing parchment sails, heraldic cross, quarterdeck cat captain, glowing stern lantern & submerged waterline keel
-        for (int y = 0; y < kS; ++y) {
-            for (int x = 0; x < kS; ++x) {
-                uint32_t p = kShipSpriteData[y * kS + x];
-                uint8_t a = static_cast<uint8_t>((p >> 24) & 0xFF);
-                if (a < 32) continue;
-                uint8_t r = static_cast<uint8_t>((p >> 16) & 0xFF);
-                uint8_t g = static_cast<uint8_t>((p >>  8) & 0xFF);
-                uint8_t b = static_cast<uint8_t>( p        & 0xFF);
-                float h = 0.55f;
-                float em = 0.0f;
+        // Hand-Inked Antique Caravel Flagship (Woodcut style with billowing canvas sails & rigging)
+        constexpr RGBA8 kHullMid     {128,  84,  52, 255};
+        constexpr RGBA8 kHullShade   { 84,  52,  30, 255};
+        constexpr RGBA8 kSailCream   {244, 238, 222, 255};
+        constexpr RGBA8 kSailShadow  {204, 194, 172, 255};
+        constexpr RGBA8 kLanternGold {255, 218,  78, 255};
 
-                // 1. Radiant Aft Stern Lantern (Warm amber/gold light casts beacon across water)
-                if (x >= 7 && x <= 11 && y >= 39 && y <= 42 && r > 240 && g > 160) {
-                    h = 0.95f;
-                    em = 1.0f;
-                }
-                // 2. Billowing Canvas Sails (3D curved dome relief so sunlight catches wind belly)
-                else if (y >= 20 && y <= 42 && (r > 170 && g > 150 && b > 120)) {
-                    float sailDome = 1.0f - std::abs((x - 32.0f) / 14.0f);
-                    h = 0.70f + std::clamp(sailDome, 0.0f, 1.0f) * 0.22f;
-                }
-                // 3. Golden Cat Figurehead & Brass Rivets
-                else if (r > 200 && g > 150 && b < 100 && y >= 42 && y <= 48) {
-                    h = 0.82f;
-                }
-                // 4. Wooden Hull Planking & Keel
-                else if (y >= 44) {
-                    h = (y >= 57) ? 0.45f : 0.62f;
-                }
-
-                s.setPixel(x, y, RGBA8{r, g, b, a}, h, em);
+        // 1. Waterline keel & hull
+        for (int y = 43; y <= 57; ++y) {
+            float t = static_cast<float>(y - 43) / 14.0f;
+            float bowX = 52.0f - t * 4.0f;
+            float sternX = 14.0f + t * 5.0f;
+            for (float x = sternX; x <= bowX; x += 0.7f) {
+                RGBA8 c = (y > 52) ? kHullShade : kHullMid;
+                s.blendPixel(static_cast<int>(x), y, c, {0.0f, -0.2f, 0.9f}, 0.60f);
             }
         }
+        s.drawInkBezier(14.0f, 43.0f, 32.0f, 46.0f, 52.0f, 43.0f, 0.9f, 0.9f, kInkDark, 0.65f);
+        s.drawInkBezier(16.0f, 48.0f, 33.0f, 51.0f, 50.0f, 47.0f, 0.8f, 0.8f, kInkDark, 0.65f);
+        s.drawInkBezier(19.0f, 54.0f, 34.0f, 56.5f, 48.0f, 53.0f, 0.9f, 0.9f, kInkDark, 0.65f);
+        s.drawInkLine(18.0f, 57.0f, 26.0f, 57.0f, 0.7f, RGBA8{248, 252, 255, 255}, 0.50f);
+        s.drawInkLine(32.0f, 57.5f, 42.0f, 57.5f, 0.7f, RGBA8{248, 252, 255, 255}, 0.50f);
+
+        // 2. Masts & Rigging
+        s.drawInkLine(32.0f, 10.0f, 32.0f, 46.0f, 1.2f, kHullShade, 0.75f);
+        s.drawInkLine(45.0f, 18.0f, 45.0f, 46.0f, 0.9f, kHullShade, 0.72f);
+        s.drawInkLine(52.0f, 43.0f, 60.0f, 35.0f, 0.9f, kHullShade, 0.70f);
+        s.drawInkLine(32.0f, 14.0f, 20.0f, 44.0f, 0.5f, kInkDark, 0.70f);
+        s.drawInkLine(32.0f, 14.0f, 42.0f, 44.0f, 0.5f, kInkDark, 0.70f);
+
+        // 3. Billowing Canvas Mainsail
+        for (int y = 16; y <= 38; ++y) {
+            float t = static_cast<float>(y - 16) / 22.0f;
+            float hw = 10.0f + std::sin(t * 3.14159f) * 3.5f;
+            for (float x = 32.0f - hw; x <= 32.0f + hw; x += 0.7f) {
+                float dx = (x - 32.0f) / hw;
+                float dome = 1.0f - dx * dx;
+                RGBA8 c = (dx < -0.15f) ? kSailCream : kSailShadow;
+                s.blendPixel(static_cast<int>(x), y, c, {dx * 0.7f, -0.2f, dome}, 0.70f + dome * 0.15f);
+            }
+        }
+        s.drawInkLine(22.0f, 16.0f, 42.0f, 16.0f, 1.0f, kHullShade, 0.78f);
+        s.drawInkLine(20.0f, 38.0f, 44.0f, 38.0f, 0.9f, kHullShade, 0.78f);
+        s.drawInkBezier(22.0f, 16.0f, 19.0f, 27.0f, 20.0f, 38.0f, 0.8f, 0.8f, kInkDark, 0.82f);
+        s.drawInkBezier(42.0f, 16.0f, 45.0f, 27.0f, 44.0f, 38.0f, 0.8f, 0.8f, kInkDark, 0.82f);
+        // Heraldic red cross
+        s.drawInkLine(32.0f, 21.0f, 32.0f, 33.0f, 1.4f, RGBA8{204, 52, 42, 255}, 0.85f);
+        s.drawInkLine(26.0f, 26.0f, 38.0f, 26.0f, 1.4f, RGBA8{204, 52, 42, 255}, 0.85f);
+
+        // 4. Glowing Aft Beacon Lantern
+        s.drawInkLine(14.0f, 40.0f, 10.0f, 41.0f, 0.8f, kInkDark, 0.85f);
+        s.fillCircle(9.5f, 41.5f, 2.8f, kLanternGold, 0.95f, 1.0f);
+        s.drawInkDot(9.5f, 41.5f, 0.8f, RGBA8{255, 252, 220, 255}, 1.0f);
+
+        // 5. Pennant
+        s.drawInkBezier(32.0f, 10.0f, 39.0f, 8.5f, 46.0f, 11.5f, 1.3f, 0.5f, RGBA8{214, 58, 48, 255}, 0.85f);
+
+    } else if (layer == InkLayer::StandeeSignpost) {
+        // Waypoint Pennant Flag on Wooden Stake (Sorcery! style travel marker)
+        s.drawInkBezier(32.0f, 20.0f, 32.0f, 40.0f, 32.0f, 60.0f, 1.4f, 1.8f, RGBA8{128, 86, 56, 255}, 0.55f);
+        s.drawInkDot(32.0f, 19.0f, 2.0f, RGBA8{214, 182, 88, 255}, 0.80f);
+        s.fillCircle(32.0f, 58.0f, 5.0f, RGBA8{168, 172, 178, 255}, 0.50f);
+        s.drawInkBezier(27.0f, 58.0f, 32.0f, 61.0f, 37.0f, 58.0f, 0.8f, 0.8f, kInkDark, 0.52f);
+
+        constexpr RGBA8 kFlagBlueLit  { 58, 122, 224, 255};
+        constexpr RGBA8 kFlagBlueMid  { 38,  88, 186, 255};
+        constexpr RGBA8 kFlagBlueShade{ 22,  56, 136, 255};
+
+        for (int y = 20; y <= 35; ++y) {
+            float t = static_cast<float>(y - 20) / 15.0f;
+            float flagLen = (1.0f - t * 0.45f) * 24.0f;
+            for (float x = 32.0f; x <= 32.0f + flagLen; x += 0.7f) {
+                float fx = (x - 32.0f) / flagLen;
+                float wave = std::sin(fx * 3.14159f * 1.5f);
+                RGBA8 c = (wave > 0.1f) ? kFlagBlueLit : ((wave < -0.1f) ? kFlagBlueShade : kFlagBlueMid);
+                s.blendPixel(static_cast<int>(x), y, c, {0.0f, 0.2f, 0.9f}, 0.72f);
+            }
+        }
+        s.drawInkBezier(32.0f, 20.0f, 44.0f, 19.0f, 56.0f, 21.0f, 0.8f, 0.8f, kInkDark, 0.76f);
+        s.drawInkBezier(32.0f, 35.0f, 40.0f, 33.5f, 48.0f, 35.0f, 0.8f, 0.8f, kInkDark, 0.76f);
+        s.drawInkLine(56.0f, 21.0f, 48.0f, 35.0f, 0.8f, kInkDark, 0.76f);
+
     } else if (layer == InkLayer::StandeeDungeonArch) {
-        // Skull Dungeon Fort Emblem (like Fort Of The Undead-One & Shattered Palace in reference!)
-        // Outer stone archway
+        // Skull Dungeon Fort Portal (Sorcery! style)
         s.fillCircle(32.0f, 38.0f, 19.0f, RGBA8{228, 232, 238, 255}, 0.7f);
         s.fillRect(14, 38, 50, 60, RGBA8{205, 214, 224, 255}, 0.7f);
-        // Inked Skull Emblem in center
         s.fillCircle(32.0f, 32.0f, 10.5f, RGBA8{252, 252, 255, 255}, 0.85f);
         s.fillRect(26, 38, 38, 48, RGBA8{252, 252, 255, 255}, 0.85f);
-        // Dark eye sockets
         s.fillCircle(28.5f, 33.0f, 2.6f, kInkDark, 0.95f);
         s.fillCircle(35.5f, 33.0f, 2.6f, kInkDark, 0.95f);
-        // Nasal cavity & jaw teeth
         s.fillRect(31, 37, 33, 40, kInkDark, 0.95f);
         s.drawLine(27.0f, 44.0f, 37.0f, 44.0f, 1.2f, kInkDark, 0.95f);
         for (int tx = 28; tx <= 36; tx += 2) {
             s.drawLine(static_cast<float>(tx), 42.0f, static_cast<float>(tx), 46.0f, 0.9f, kInkDark, 0.9f);
         }
-        // Crossed bones below
         s.drawLine(18.0f, 55.0f, 46.0f, 55.0f, 2.4f, RGBA8{248, 248, 252, 255}, 0.85f);
+
     } else if (layer == InkLayer::StandeeMonsterSlime) {
+        // Hand-Inked Arcane Slime
         s.fillCircle(32.0f, 45.0f, 13.0f, RGBA8{82, 188, 142, 255}, 0.8f, 0.2f);
-        s.fillRect(26, 41, 29, 45, kInkDark, 0.9f);
-        s.fillRect(35, 41, 38, 45, kInkDark, 0.9f);
+        s.drawInkBezier(19.0f, 45.0f, 32.0f, 32.0f, 45.0f, 45.0f, 0.9f, 0.9f, kInkDark, 0.85f);
+        s.drawInkBezier(19.0f, 45.0f, 32.0f, 58.0f, 45.0f, 45.0f, 0.9f, 0.9f, kInkDark, 0.85f);
+        s.fillCircle(28.0f, 43.0f, 2.5f, kInkDark, 0.95f);
+        s.fillCircle(36.0f, 43.0f, 2.5f, kInkDark, 0.95f);
+        s.drawInkDot(27.5f, 42.5f, 0.8f, RGBA8{255, 255, 255, 255}, 1.0f);
+        s.drawInkDot(35.5f, 42.5f, 0.8f, RGBA8{255, 255, 255, 255}, 1.0f);
+
     } else if (layer == InkLayer::StandeeMonsterBandit) {
-        s.fillRect(22, 32, 42, 58, RGBA8{142, 64, 54, 255}, 0.75f);
-        s.fillCircle(32.0f, 23.0f, 9.5f, RGBA8{198, 152, 118, 255}, 0.85f);
-        s.drawLine(42.0f, 42.0f, 54.0f, 22.0f, 2.0f, RGBA8{180, 185, 195, 255}, 0.85f);
+        // Hand-Inked Highwayman
+        s.fillCircle(32.0f, 22.0f, 8.5f, RGBA8{198, 152, 118, 255}, 0.85f);
+        s.drawInkBezier(22.0f, 18.0f, 32.0f, 13.0f, 42.0f, 18.0f, 1.2f, 1.2f, kInkDark, 0.90f);
+        s.drawInkLine(22.0f, 25.0f, 42.0f, 25.0f, 1.6f, RGBA8{48, 42, 38, 255}, 0.88f); // Mask
+        for (int y = 30; y <= 58; ++y) {
+            for (int x = 22; x <= 42; ++x) {
+                s.blendPixel(x, y, RGBA8{142, 64, 54, 255}, {0.0f, 0.0f, 0.8f}, 0.75f);
+            }
+        }
+        s.drawInkLine(42.0f, 40.0f, 56.0f, 20.0f, 1.5f, RGBA8{214, 222, 232, 255}, 0.88f); // Cutlass
+
     } else if (layer == InkLayer::StandeeMonsterWyvern) {
-        // Elder Sea-Wyvern / Dragon Boss Standee
-        s.drawLine(10.0f, 16.0f, 32.0f, 34.0f, 5.5f, RGBA8{176, 56, 48, 255}, 0.8f);
-        s.drawLine(54.0f, 16.0f, 32.0f, 34.0f, 5.5f, RGBA8{176, 56, 48, 255}, 0.8f);
+        // Hand-Inked Dragon / Sea Wyvern Boss
+        s.drawInkBezier(10.0f, 16.0f, 24.0f, 26.0f, 32.0f, 34.0f, 2.5f, 3.5f, RGBA8{176, 56, 48, 255}, 0.8f);
+        s.drawInkBezier(54.0f, 16.0f, 40.0f, 26.0f, 32.0f, 34.0f, 2.5f, 3.5f, RGBA8{176, 56, 48, 255}, 0.8f);
         s.fillCircle(32.0f, 38.0f, 13.0f, RGBA8{148, 42, 38, 255}, 0.85f);
         s.fillCircle(32.0f, 18.0f,  9.0f, RGBA8{196, 68, 52, 255}, 0.9f);
-        s.fillCircle(29.0f, 16.0f,  2.0f, RGBA8{255, 220, 80, 255}, 0.95f, 1.0f);
-        s.fillCircle(35.0f, 16.0f,  2.0f, RGBA8{255, 220, 80, 255}, 0.95f, 1.0f);
+        s.fillCircle(29.0f, 16.0f,  2.2f, RGBA8{255, 220, 80, 255}, 0.95f, 1.0f);
+        s.fillCircle(35.0f, 16.0f,  2.2f, RGBA8{255, 220, 80, 255}, 0.95f, 1.0f);
+        s.drawInkDot(29.0f, 16.0f, 0.8f, kInkDark, 1.0f);
+        s.drawInkDot(35.0f, 16.0f, 0.8f, kInkDark, 1.0f);
+
     } else if (layer == InkLayer::StandeeSlashArc) {
         // Glowing crescent sword slash arc
         for (int y = 8; y < 56; ++y) {
@@ -681,19 +1080,49 @@ void synthCharacterOrPropStandee(LayerSlice& s, uint16_t layer) {
                 }
             }
         }
+
     } else if (layer == InkLayer::StandeeStandingStone) {
-        s.fillRect(24, 14, 40, 60, RGBA8{138, 142, 148, 255}, 0.8f);
-        s.fillCircle(32.0f, 30.0f, 4.5f, RGBA8{90, 210, 255, 255}, 0.95f, 1.0f);
+        // Hand-Carved Monolith with Glowing Blue Runes
+        for (int y = 14; y <= 58; ++y) {
+            for (int x = 24; x <= 40; ++x) {
+                float dx = (static_cast<float>(x) - 32.0f) / 8.0f;
+                RGBA8 c = (dx < -0.1f) ? RGBA8{172, 178, 186, 255} : RGBA8{124, 128, 136, 255};
+                s.blendPixel(x, y, c, {dx * 0.7f, 0.0f, 0.7f}, 0.80f);
+            }
+        }
+        s.drawInkBezier(24.0f, 14.0f, 32.0f, 12.0f, 40.0f, 14.0f, 0.9f, 0.9f, kInkDark, 0.85f);
+        s.drawInkLine(24.0f, 14.0f, 24.0f, 58.0f, 0.9f, kInkDark, 0.85f);
+        s.drawInkLine(40.0f, 14.0f, 40.0f, 58.0f, 0.9f, kInkDark, 0.85f);
+        // Glowing carved arcane rune
+        s.drawInkLine(32.0f, 22.0f, 32.0f, 42.0f, 1.2f, RGBA8{110, 220, 255, 255}, 0.95f);
+        s.drawInkLine(28.0f, 28.0f, 36.0f, 28.0f, 1.2f, RGBA8{110, 220, 255, 255}, 0.95f);
+        s.drawInkLine(29.0f, 36.0f, 35.0f, 36.0f, 1.2f, RGBA8{110, 220, 255, 255}, 0.95f);
+        s.fillCircle(32.0f, 30.0f, 2.5f, RGBA8{230, 250, 255, 255}, 1.0f, 1.0f);
+
     } else if (layer == InkLayer::StandeeTreasureChest) {
-        s.fillRect(16, 34, 48, 58, RGBA8{156, 98, 48, 255}, 0.75f);
-        s.fillRect(16, 43, 48, 47, RGBA8{242, 198, 72, 255}, 0.9f, 0.5f);
+        // Gilded Oak Chest with Iron Bands
+        for (int y = 34; y <= 58; ++y) {
+            for (int x = 16; x <= 48; ++x) {
+                s.blendPixel(x, y, RGBA8{142, 94, 52, 255}, {0.0f, 0.0f, 0.8f}, 0.75f);
+            }
+        }
+        s.drawInkLine(16.0f, 34.0f, 48.0f, 34.0f, 1.2f, kInkDark, 0.82f);
+        s.drawInkLine(16.0f, 43.0f, 48.0f, 43.0f, 1.4f, RGBA8{62, 62, 68, 255}, 0.85f); // Iron band
+        s.drawInkLine(24.0f, 34.0f, 24.0f, 58.0f, 1.2f, RGBA8{62, 62, 68, 255}, 0.85f);
+        s.drawInkLine(40.0f, 34.0f, 40.0f, 58.0f, 1.2f, RGBA8{62, 62, 68, 255}, 0.85f);
+        s.fillCircle(32.0f, 44.0f, 3.0f, RGBA8{242, 198, 72, 255}, 0.95f, 0.7f); // Gold keyhole lock
+
     } else if (layer == InkLayer::StandeeCampfire) {
-        s.drawLine(18.0f, 56.0f, 46.0f, 48.0f, 2.5f, RGBA8{112, 72, 42, 255}, 0.5f);
-        s.drawLine(18.0f, 48.0f, 46.0f, 56.0f, 2.5f, RGBA8{112, 72, 42, 255}, 0.5f);
+        // Campfire with Crossed Inked Logs and Flickering Hearth Flames
+        s.drawInkLine(18.0f, 56.0f, 46.0f, 48.0f, 2.5f, RGBA8{112, 72, 42, 255}, 0.5f);
+        s.drawInkLine(18.0f, 48.0f, 46.0f, 56.0f, 2.5f, RGBA8{112, 72, 42, 255}, 0.5f);
         s.fillCircle(32.0f, 40.0f, 9.0f, RGBA8{255, 165, 48, 255}, 0.9f, 1.0f);
         s.fillCircle(32.0f, 42.0f, 5.0f, RGBA8{255, 238, 128, 255}, 0.95f, 1.0f);
+        s.drawInkDot(30.0f, 32.0f, 1.0f, RGBA8{255, 200, 60, 255}, 0.95f); // Ember
+        s.drawInkDot(35.0f, 28.0f, 0.8f, RGBA8{255, 160, 40, 255}, 0.95f);
+
     } else {
-        // Sunken Ruin / Sea Stack / Signpost / Marsh Reeds fallback
+        // Fallback / Ancient Monument
         s.fillRect(22, 18, 42, 60, kPaperShadow, 0.7f);
     }
     s.applyInkOutlineAndPaperCutout();

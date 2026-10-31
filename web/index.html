@@ -51,11 +51,23 @@
 
         canvas#canvas {
             display: block;
-            width: 100%;
-            height: 100%;
             outline: none;
             cursor: crosshair;
             touch-action: none;
+            /* Always maintain 16:9 aspect ratio matching desktop viewport */
+            aspect-ratio: 16 / 9;
+            width: 100%;
+            height: auto;
+            max-width: calc(100vh * (16 / 9));
+            max-height: 100vh;
+            box-shadow: 0 0 36px rgba(0, 0, 0, 0.75);
+        }
+
+        @supports (max-width: calc(100dvh * (16 / 9))) {
+            canvas#canvas {
+                max-width: calc(100dvh * (16 / 9));
+                max-height: 100dvh;
+            }
         }
 
         /* Loading Screen */
@@ -1298,11 +1310,59 @@
         // CANVAS & INITIAL SETUP
         // -------------------------------------------------------------
         const canvasElem = document.getElementById('canvas');
+        const canvasContainer = document.getElementById('canvas-container');
         const statusText = document.getElementById('status-text');
         const gpuDot = document.getElementById('gpu-dot');
         let statsLedgerOpen = false;
         let lastToastRegion = '';
         let toastTimeoutId = null;
+
+        // -------------------------------------------------------------
+        // RESPONSIVE 16:9 ASPECT RATIO PRESERVATION
+        // -------------------------------------------------------------
+        function fitCanvasAspectRatio() {
+            if (!canvasElem) return;
+            const container = canvasContainer || document.body;
+            const containerW = container.clientWidth || window.innerWidth;
+            const containerH = container.clientHeight || window.innerHeight;
+            if (containerW <= 0 || containerH <= 0) return;
+
+            const targetAspect = 16 / 9;
+            const currentAspect = containerW / containerH;
+
+            let targetW, targetH;
+            if (currentAspect > targetAspect) {
+                // Viewport is wider than 16:9 -> pillarbox (fit container height, center horizontally)
+                targetH = containerH;
+                targetW = Math.round(containerH * targetAspect);
+            } else {
+                // Viewport is taller than 16:9 (e.g. mobile portrait) -> letterbox (fit container width, center vertically)
+                targetW = containerW;
+                targetH = Math.round(containerW / targetAspect);
+            }
+
+            canvasElem.style.width = targetW + 'px';
+            canvasElem.style.height = targetH + 'px';
+        }
+
+        fitCanvasAspectRatio();
+        window.addEventListener('resize', fitCanvasAspectRatio);
+        window.addEventListener('orientationchange', function() {
+            setTimeout(fitCanvasAspectRatio, 80);
+            setTimeout(fitCanvasAspectRatio, 260);
+        });
+        if (window.visualViewport) {
+            window.visualViewport.addEventListener('resize', fitCanvasAspectRatio);
+        }
+        document.addEventListener('DOMContentLoaded', fitCanvasAspectRatio);
+
+        if (canvasContainer) {
+            canvasContainer.addEventListener('mousedown', function(e) {
+                if (canvasElem && document.activeElement !== canvasElem) {
+                    canvasElem.focus();
+                }
+            });
+        }
 
         window.toggleStatsLedger = function(forceState) {
             const ribbon = document.getElementById('chart-hud-ribbon');
@@ -1699,6 +1759,7 @@
         }
 
         window.addEventListener('resize', function() {
+            fitCanvasAspectRatio();
             if (isMobileDevice()) {
                 document.body.classList.add('is-mobile');
                 if (touchTogglePill) touchTogglePill.style.display = 'none';
@@ -1964,6 +2025,7 @@
             postRun: [
                 function() {
                     unlockAudio();
+                    fitCanvasAspectRatio();
                     window.hideAppLoadingScreen();
                 }
             ],

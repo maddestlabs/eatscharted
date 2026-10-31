@@ -44,7 +44,7 @@ int main(int argc, char** argv) {
         world.buildContinentalPangaea(2026u);
     }
 
-    eatscharted::ChartStats stats = world.rebuildWorldGeometry();
+    eatscharted::ChartStats stats = world.rebuildWorldGeometry(world.hero().pos.x, world.hero().pos.z);
     uint32_t totalTris = stats.mapSurfaceTriangles + stats.bannerGlyphTriangles + stats.standeeCount * 2u;
     std::cout << "[Eatscharted] 2.5D Living Cartography World compiled:\n"
               << "  - Procedural 32-Layer InkCanvas Atlas     : " << stats.atlasGenTimeMs << " ms\n"
